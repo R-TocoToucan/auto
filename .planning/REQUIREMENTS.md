@@ -122,17 +122,67 @@ Explicitly excluded. Documented to prevent scope creep.
 
 ## Traceability
 
-Populated during roadmap creation.
+Every v1 requirement maps to exactly one phase. See `.planning/ROADMAP.md`.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (to be filled by roadmapper) | — | Pending |
+| SAFE-01 | Phase 1 | Pending |
+| SAFE-02 | Phase 1 | Pending |
+| SAFE-03 | Phase 1 | Pending |
+| SAFE-04 | Phase 1 | Pending |
+| SAFE-05 | Phase 1 | Pending |
+| SAFE-06 | Phase 1 | Pending |
+| SAFE-07 | Phase 1 | Pending |
+| SPEC-01 | Phase 1 | Pending |
+| SPEC-02 | Phase 1 | Pending |
+| SPEC-03 | Phase 1 | Pending |
+| SPEC-04 | Phase 1 | Pending |
+| SPEC-05 | Phase 1 | Pending |
+| DATA-01 | Phase 2 | Pending |
+| DATA-02 | Phase 2 | Pending |
+| DATA-03 | Phase 2 | Pending |
+| DATA-04 | Phase 2 | Pending |
+| SIM-01 | Phase 2 | Pending |
+| SIM-02 | Phase 2 | Pending |
+| SIM-03 | Phase 2 | Pending |
+| SIM-04 | Phase 2 | Pending |
+| SIM-05 | Phase 2 | Pending |
+| SIM-06 | Phase 2 | Pending |
+| SIM-07 | Phase 2 | Pending |
+| PROTO-01 | Phase 3 | Pending |
+| PROTO-02 | Phase 3 | Pending |
+| PROTO-03 | Phase 3 | Pending |
+| PROTO-04 | Phase 3 | Pending |
+| PROTO-05 | Phase 3 | Pending |
+| PROTO-06 | Phase 3 | Pending |
+| PROTO-07 | Phase 3 | Pending |
+| PROTO-08 | Phase 3 | Pending |
+| EVAL-01 | Phase 4 | Pending |
+| EVAL-02 | Phase 4 | Pending |
+| EVAL-03 | Phase 4 | Pending |
+| MOD-01 | Phase 4 | Pending |
+| MOD-02 | Phase 4 | Pending |
+| MOD-03 | Phase 4 | Pending |
+| MOD-04 | Phase 4 | Pending |
+| MOD-05 | Phase 4 | Pending |
+| MOD-06 | Phase 4 | Pending |
+| MOD-07 | Phase 4 | Pending |
+| FRZ-01 | Phase 5 | Pending |
+| BRK-01 | Phase 5 | Pending |
+| BRK-02 | Phase 5 | Pending |
+| BRK-03 | Phase 5 | Pending |
+| BRK-04 | Phase 5 | Pending |
+| BRK-05 | Phase 5 | Pending |
+| BRK-06 | Phase 5 | Pending |
+| FRZ-02 | Phase 5 | Pending |
+| FRZ-03 | Phase 5 | Pending |
+| HOLD-01 | Phase 6 | Pending |
 
 **Coverage:**
-- v1 requirements: 44 total
-- Mapped to phases: 0 (pending roadmap)
-- Unmapped: 44 ⚠️
+- v1 requirements: 51 total (the earlier "44" count was a miscount of the enumerated REQ-IDs)
+- Mapped to phases: 51 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-09-08*
-*Last updated: 2026-09-08 after initialization*
+*Last updated: 2026-09-08 after roadmap creation (traceability populated)*
