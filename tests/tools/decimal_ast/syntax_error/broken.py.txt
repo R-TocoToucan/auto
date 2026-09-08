@@ -1,0 +1,5 @@
+# Deliberately un-parseable Python. Kept as `.py.txt` so pytest's own
+# collector never touches it; the runner test copies this file to
+# `<tmp>/broken.py` before invoking the AST checker.
+def broken(:
+    pass
