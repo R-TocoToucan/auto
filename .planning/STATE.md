@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: safety-foundation-bithumb-spec-adapter
 status: executing
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-09-08T10:26:33.256Z"
+stopped_at: Completed 01-03-PLAN.md
+last_updated: "2026-09-08T10:59:06.605Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 01 (safety-foundation-bithumb-spec-adapter) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-09-08 — Phase 01 execution started
 
-Progress: [█████░░░░░] 50%
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
@@ -59,6 +59,7 @@ Progress: [█████░░░░░] 50%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 01 P01 | 22 min | 9 tasks | 25 files |
+| Phase 01 P03 | 24 min | 9 tasks | 23 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,10 @@ Recent decisions affecting current work:
 - [Phase ?]: Plan 01-02: Loader uses model_copy(update=...) overlay for file-only credential keys instead of pydantic-settings _env_file= — keeps env-wins precedence and ambiguous-mixed detection in auditable loader code.
 - [Phase ?]: Plan 01-02: SecretStr | None (Optional) field typing lets loader distinguish unset (None) from present-but-empty (SecretStr('')) — different failure reasons for each case.
 - [Phase ?]: Plan 01-02: AST checker allows Decimal.from_float(...) — explicit float conversion is intentional. Silent Decimal(0.1) is the D-49 pathology; explicit .from_float is out of scope.
+- [Phase ?]: Plan 01-03: HANDLER_MAP uses importlib-based lazy handler closures so the dispatcher lands before individual handler modules exist; tests mock.patch.dict HANDLER_MAP for isolation.
+- [Phase ?]: Plan 01-03: reserved_handler prints refusal + returns 1 instead of raising NotImplementedError (D-90 discipline avoids unclean tracebacks for documented refusals).
+- [Phase ?]: Plan 01-03: Import Linter subprocess invocation via sys.executable + 'from importlinter.cli import lint_imports; sys.exit(lint_imports(...))' — avoids missing __main__, .exe/POSIX split, and offline uv run rebuild path.
+- [Phase ?]: Plan 01-03: Negative-fixture test passes no_cache=True to lint_imports + shutil.rmtree stray cache dir + .gitignore .import_linter_cache/ — belt-and-suspenders fixture immutability.
 
 ### Pending Todos
 
@@ -96,6 +101,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-08T10:26:32.655Z
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-09-08T10:59:06.596Z
+Stopped at: Completed 01-03-PLAN.md
 Resume file: None
