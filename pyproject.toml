@@ -51,9 +51,6 @@ markers = [
 ]
 filterwarnings = [
     "error",
-    # tests/ directory is created in task 01-01-02; before that, pytest's
-    # collection-time warning about missing testpaths is expected and non-fatal.
-    "ignore:No files were found in testpaths:pytest.PytestConfigWarning",
 ]
 
 # ---------------------------------------------------------------------------
