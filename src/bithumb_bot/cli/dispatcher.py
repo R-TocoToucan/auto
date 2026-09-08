@@ -115,6 +115,34 @@ HANDLER_MAP: dict[tuple[str, str], HandlerFn] = {
     ("m1", "verify-snapshot"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.m1_stubs", "m1_verify_snapshot_stub"
     ),
+    # ---- D-87 reserved verbs — every entry bound to reserved_handler ------
+    ("m2", "collect-observations"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.reserved", "reserved_handler"
+    ),
+    ("m2", "calibrate-costs"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.reserved", "reserved_handler"
+    ),
+    ("m2", "replay-known-answer"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.reserved", "reserved_handler"
+    ),
+    ("m4", "evaluate-selection"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.reserved", "reserved_handler"
+    ),
+    ("m5", "evaluate-module"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.reserved", "reserved_handler"
+    ),
+    ("freeze", "strategy"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.reserved", "reserved_handler"
+    ),
+    ("m6a", "verify-mock-broker"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.reserved", "reserved_handler"
+    ),
+    ("freeze", "final"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.reserved", "reserved_handler"
+    ),
+    ("holdout", "evaluate"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.reserved", "reserved_handler"
+    ),
 }
 
 
@@ -226,9 +254,65 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to the candidate snapshot file (plan 01-04).",
     )
 
+    # -- D-87 reserved verbs (added by plan 01-03-08) ---------------------
+    # Every reserved subparser is labelled `RESERVED — future phase, not
+    # implemented` in its help text (per plan Behavior). All bind to the
+    # shared reserved_handler via HANDLER_MAP; the dispatcher runs
+    # validate() first and, only if it passes, invokes the reserved
+    # handler — which then explicitly refuses. This matches D-90's rule
+    # that reserved handlers must not be scaffolded as functional.
+    _add_reserved_subparsers(verbs)
+
     # Attach the top-level verbs subparser so 01-03-08 can extend it.
     parser._bt_verbs = verbs  # type: ignore[attr-defined]
     return parser
+
+
+# Sub-verbs per top-level reserved verb (D-87 registry).
+_RESERVED_TREE: dict[str, tuple[str, ...]] = {
+    "m2": ("collect-observations", "calibrate-costs", "replay-known-answer"),
+    "m4": ("evaluate-selection",),
+    "m5": ("evaluate-module",),
+    "freeze": ("strategy", "final"),
+    "m6a": ("verify-mock-broker",),
+    "holdout": ("evaluate",),
+}
+
+
+def _add_reserved_subparsers(verbs: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    """Register argparse subparsers for every D-87 reserved verb.
+
+    Each subverb's help text is labelled ``RESERVED — future phase, not
+    implemented`` so ``bt <verb> <subverb> --help`` makes the reserved
+    status obvious. The parser never binds ``func`` — the dispatcher's
+    HANDLER_MAP owns the reserved-handler wiring.
+    """
+    for top_verb, subverbs in _RESERVED_TREE.items():
+        parser = verbs.add_parser(
+            top_verb,
+            help=(
+                f"RESERVED — future phase, not implemented (D-87). "
+                f"Every '{top_verb}' subverb refuses uniformly."
+            ),
+        )
+        subs = parser.add_subparsers(
+            dest="subverb",
+            metavar="<subverb>",
+            title=f"{top_verb} verbs",
+        )
+        for subverb in subverbs:
+            subs.add_parser(
+                subverb,
+                help=f"RESERVED — future phase, not implemented (D-87 / D-90).",
+                description=(
+                    f"RESERVED — future phase, not implemented. "
+                    f"'bt {top_verb} {subverb}' is registered in the "
+                    "capability registry per D-87 so its prerequisites "
+                    "exist as data, but its handler is not scaffolded as "
+                    "functional (D-90 phase discipline). Refuses uniformly "
+                    "via reserved_handler."
+                ),
+            )
 
 
 # ---------------------------------------------------------------------------
