@@ -255,13 +255,19 @@ class TestNoHumanSignedInCodebase:
                 capture_output=True,
                 text=True,
             )
+            # Files that legitimately reference the phrase are the tests
+            # asserting its absence and the source module documenting
+            # the D-84 discipline in code comments.
+            _ALLOWED = {
+                "test_verification_bundle.py",
+                "verification.py",
+                "test_fetch_spec_end_to_end.py",
+                "test_integration_wave3.py",
+            }
             matched = [
                 line.strip()
                 for line in result.stdout.splitlines()
-                if line.strip()
-                # Allow tests that assert the phrase's absence to reference it.
-                and Path(line.strip()).name != "test_verification_bundle.py"
-                and Path(line.strip()).name != "verification.py"
+                if line.strip() and Path(line.strip()).name not in _ALLOWED
             ]
             assert matched == [], (
                 f"'human-signed' appears in {path_root}/ — D-84 requires "

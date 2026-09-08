@@ -106,14 +106,18 @@ HANDLER_MAP: dict[tuple[str, str], HandlerFn] = {
     ("m0", "selfcheck"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.m0_selfcheck", "handler"
     ),
+    # ---- Plan 01-04 replaces the m1_stubs bindings with the real
+    # handlers below (D-90 phase discipline). The `m1_stubs` module
+    # stays as defense-in-depth for direct Python callers who bypass
+    # the dispatcher entirely.
     ("m1", "fetch-spec"): _make_lazy_handler(
-        "bithumb_bot.cli.handlers.m1_stubs", "m1_fetch_spec_stub"
+        "bithumb_bot.cli.handlers.m1_fetch_spec", "handler"
     ),
     ("m1", "verify-facts"): _make_lazy_handler(
-        "bithumb_bot.cli.handlers.m1_stubs", "m1_verify_facts_stub"
+        "bithumb_bot.cli.handlers.m1_verify_facts", "handler"
     ),
     ("m1", "verify-snapshot"): _make_lazy_handler(
-        "bithumb_bot.cli.handlers.m1_stubs", "m1_verify_snapshot_stub"
+        "bithumb_bot.cli.handlers.m1_verify_snapshot", "handler"
     ),
     # ---- D-87 reserved verbs — every entry bound to reserved_handler ------
     ("m2", "collect-observations"): _make_lazy_handler(
