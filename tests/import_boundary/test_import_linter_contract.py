@@ -34,12 +34,16 @@ FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "import_linter_violation"
 FIXTURE_PYPROJECT = FIXTURE_DIR / "pyproject.toml"
 
 
-def _run_lint(config: str | None, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_lint(
+    config: str | None, cwd: Path, no_cache: bool = False
+) -> subprocess.CompletedProcess[str]:
     """Invoke ``importlinter.cli.lint_imports`` via ``sys.executable``.
 
     Passing ``config=None`` runs against the pyproject.toml auto-discovered
     from ``cwd``. Passing a config path invokes the checker against that
-    explicit configuration.
+    explicit configuration. Pass ``no_cache=True`` to prevent the checker
+    from creating a ``.import_linter_cache/`` directory under ``cwd`` —
+    used by the negative-fixture test so the fixture tree stays pristine.
     """
     if config is None:
         config_repr = "None"
@@ -49,7 +53,10 @@ def _run_lint(config: str | None, cwd: Path) -> subprocess.CompletedProcess[str]
         f"""
         import sys
         from importlinter.cli import lint_imports
-        exit_code = lint_imports(config_filename={config_repr})
+        exit_code = lint_imports(
+            config_filename={config_repr},
+            no_cache={no_cache!r},
+        )
         sys.exit(exit_code)
         """
     ).strip()
@@ -91,7 +98,9 @@ class TestImportLinterContract:
             p: p.stat().st_mtime for p in tracked_fixture_files if p.is_file()
         }
 
-        result = _run_lint(config=str(FIXTURE_PYPROJECT), cwd=FIXTURE_DIR)
+        result = _run_lint(
+            config=str(FIXTURE_PYPROJECT), cwd=FIXTURE_DIR, no_cache=True
+        )
         assert result.returncode != 0, (
             f"lint-imports unexpectedly passed on the negative fixture.\n"
             f"stdout:\n{result.stdout}\n"
@@ -103,13 +112,29 @@ class TestImportLinterContract:
             f"stderr:\n{result.stderr}"
         )
 
+        # The mtime check applies to the COMMITTED fixture files only —
+        # ignore any transient artifacts (e.g. a `.import_linter_cache/`
+        # directory the checker would drop into cwd if caching were left
+        # enabled; the `no_cache=True` flag above already suppresses that).
+        # Filter the "after" snapshot to the same file set captured before.
         mtimes_after = {
-            p: p.stat().st_mtime for p in tracked_fixture_files if p.is_file()
+            p: p.stat().st_mtime
+            for p in mtimes_before
+            if p.is_file()
         }
         assert mtimes_before == mtimes_after, (
             "fixture files were mutated during the test run — the checker "
             "must never write into the fixture tree."
         )
+        # Belt and suspenders: no stray cache dir should exist even so.
+        stray = list(FIXTURE_DIR.glob(".import_linter_cache*"))
+        for path in stray:
+            if path.is_dir():
+                import shutil
+
+                shutil.rmtree(path)
+            else:
+                path.unlink()
 
 
 @pytest.mark.slow

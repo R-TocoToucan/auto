@@ -60,7 +60,8 @@ class TestFormatGate1Summary:
 
         gate1, sha256 = load_gate1(GATE1_PATH)
         text = config_validate.format_gate1_summary(gate1, sha256)
-        # Class-only reporting; no credential words in the SUMMARY.
+        # D-69: no withdrawal path exists anywhere in this project —
+        # asserting the SUMMARY never leaks 'withdraw' is belt-and-suspenders.
         assert not re.search(r"access|secret|token|withdraw", text, re.IGNORECASE)
 
     def test_summary_reports_value_deferred_field_count(self) -> None:

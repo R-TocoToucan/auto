@@ -14,6 +14,7 @@ env/
 .ruff_cache/
 .pyre/
 .pytype/
+.import_linter_cache/
 
 # --- Build / distribution artifacts ---
 build/

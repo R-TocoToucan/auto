@@ -295,4 +295,6 @@ class TestHandlerMapSurface:
 
     def test_no_m6b_or_live_verbs_in_handler_map(self) -> None:
         for verb, subverb in dispatcher.HANDLER_MAP:
+            # D-69: no withdrawal path exists in this project — asserting
+            # 'withdraw' cannot appear as a verb name is belt-and-suspenders.
             assert verb not in ("m6b", "live", "withdraw"), (verb, subverb)

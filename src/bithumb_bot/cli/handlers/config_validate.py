@@ -21,7 +21,8 @@ Behavior:
 The summary NEVER prints a credential-adjacent field — there are none in
 ``gate1.toml`` by construction (D-57 forbids them in the committed
 Decision Register), and the test suite asserts the SUMMARY does not
-match ``/access|secret|token|withdraw/i``.
+match ``/access|secret|token|withdraw/i`` (D-69: no withdrawal path,
+no withdrawal-adjacent field, ever).
 """
 
 from __future__ import annotations
