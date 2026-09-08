@@ -22,11 +22,11 @@
 
 ### Bithumb Spec Adapter (M1 — authenticated read, no trade)
 
-- [ ] **SPEC-01**: Using the account/read key (JWT), the spec adapter queries available-order-information (e.g. `/v1/orders/chance`) for `bid_fee`, `ask_fee`, `maker_bid_fee`, `maker_ask_fee`, min order size, and supported order types at startup and periodically
-- [ ] **SPEC-02**: Fees used are recorded per experiment
-- [ ] **SPEC-03**: Price-tick and qty-step rounding and minimum-order rules are encoded and pass boundary unit tests
-- [ ] **SPEC-04**: The fee/tick/min-order snapshot is persisted as a hashed artifact that the simulator consumes (never re-queried mid-simulation)
-- [ ] **SPEC-05**: Per-channel token-bucket rate limiting + backoff for public REST, private REST, and WebSocket
+- [x] **SPEC-01**: Using the account/read key (JWT), the spec adapter queries available-order-information (e.g. `/v1/orders/chance`) for `bid_fee`, `ask_fee`, `maker_bid_fee`, `maker_ask_fee`, min order size, and supported order types at startup and periodically
+- [x] **SPEC-02**: Fees used are recorded per experiment
+- [x] **SPEC-03**: Price-tick and qty-step rounding and minimum-order rules are encoded and pass boundary unit tests
+- [x] **SPEC-04**: The fee/tick/min-order snapshot is persisted as a hashed artifact that the simulator consumes (never re-queried mid-simulation)
+- [x] **SPEC-05**: Per-channel token-bucket rate limiting + backoff for public REST, private REST, and WebSocket
 
 ### Data Pipeline (M2)
 
@@ -140,11 +140,11 @@ Every v1 requirement maps to exactly one phase. See `.planning/ROADMAP.md`.
 | SAFE-05 | Phase 1 | Complete |
 | SAFE-06 | Phase 1 | Complete |
 | SAFE-07 | Phase 1 | Complete |
-| SPEC-01 | Phase 1 | Pending |
-| SPEC-02 | Phase 1 | Pending |
-| SPEC-03 | Phase 1 | Pending |
-| SPEC-04 | Phase 1 | Pending |
-| SPEC-05 | Phase 1 | Pending |
+| SPEC-01 | Phase 1 | Complete |
+| SPEC-02 | Phase 1 | Complete |
+| SPEC-03 | Phase 1 | Complete |
+| SPEC-04 | Phase 1 | Complete |
+| SPEC-05 | Phase 1 | Complete |
 | DATA-01 | Phase 2 | Pending |
 | DATA-02 | Phase 2 | Pending |
 | DATA-03 | Phase 2 | Pending |
