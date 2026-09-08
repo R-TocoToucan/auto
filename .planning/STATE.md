@@ -4,15 +4,15 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 1
 current_phase_name: Safety Foundation + Bithumb Spec Adapter
-status: planning
-stopped_at: Phase 1 context gathered
-last_updated: "2026-09-08T08:19:48.075Z"
+status: planned
+stopped_at: Phase 1 planned — 4 plans, 43 tasks, plan-check PASS
+last_updated: "2026-09-08T00:00:00.000Z"
 last_activity: 2026-09-08
-last_activity_desc: Roadmap created (6 phases mirroring the M0→holdout spine)
+last_activity_desc: Phase 1 planned (RESEARCH.md + VALIDATION.md + 4 PLAN.md files; plan-checker verified)
 progress:
   total_phases: 1
   completed_phases: 0
-  total_plans: 0
+  total_plans: 4
   completed_plans: 0
 ---
 
@@ -29,8 +29,8 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 Phase: 1 of 6 (Safety Foundation + Bithumb Spec Adapter)
 Plan: 0 of 4 in current phase
-Status: Ready to plan
-Last activity: 2026-09-08 — Roadmap created (6 phases mirroring the M0→holdout spine)
+Status: Ready to execute
+Last activity: 2026-09-08 — Phase 1 planned: RESEARCH.md, VALIDATION.md, 4 PLAN.md files emitted; plan-checker verified all 12 requirements + 5 success criteria covered
 
 Progress: [░░░░░░░░░░] 0%
 
