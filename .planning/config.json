@@ -86,6 +86,6 @@
     "source_grounding": true,
     "source_grounding_authority": "grep"
   },
-  "mode": "yolo",
+  "mode": "interactive",
   "granularity": "standard"
 }

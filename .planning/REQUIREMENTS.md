@@ -92,7 +92,14 @@
 
 Deferred to a future milestone. Tracked but not in this roadmap.
 
-### Live Integration & Pilot
+### Post-Holdout Backlog — Live Integration & Pilot (Deferred)
+
+**Status: Deferred — tracked, not started, not completed, not removed from scope.**
+These items are the M6B → M7 → M8 continuation of `docs/EXECUTION.md`, gated
+behind the successful holdout verdict from Phase 6 and a separate milestone with
+its own trade-enabled key and funded technically-isolated subaccount. They must
+remain visible in every requirement audit until an explicit new milestone opens
+them; do not treat as done and do not delete from this file.
 
 - **LIVE-01**: M6B extremely small live integration tests (trade-only, withdrawal-disabled, IP-restricted key; real submission/trigger/cancel/fill/private-stream/reconciliation at minimum size)
 - **LIVE-02**: Live credential-permission verification for both auth paths
@@ -178,11 +185,24 @@ Every v1 requirement maps to exactly one phase. See `.planning/ROADMAP.md`.
 | FRZ-03 | Phase 5 | Pending |
 | HOLD-01 | Phase 6 | Pending |
 
-**Coverage:**
-- v1 requirements: 51 total (the earlier "44" count was a miscount of the enumerated REQ-IDs)
-- Mapped to phases: 51 ✓
-- Unmapped: 0
+**Coverage — Requirement Accounting:**
+
+Total specification requirements: **55** (from `docs/EXECUTION.md` milestone spine)
+
+| Bucket | Count | Status |
+|---|---|---|
+| **In-scope v1 (roadmap-mapped)** | **51** | Pending — mapped to Phases 1–6 |
+| **Deferred post-holdout backlog (LIVE-01…04)** | **4** | Deferred — tracked, not started, not completed, not removed |
+| **Total specification requirements** | **55** | — |
+
+**v1 in-scope breakdown:** SAFE 7 + SPEC 5 + DATA 4 + SIM 7 + PROTO 8 + EVAL 3 + MOD 7 + FRZ 3 + BRK 6 + HOLD 1 = 51.
+
+- In-scope mapped to phases: **51 / 51** ✓
+- In-scope unmapped: **0**
+- Deferred LIVE items visible in v2 backlog: **4 / 4** ✓
+
+Research Extensions (RSCH-01…04) are opportunistic future work outside the 55 spec requirements; tracked separately in the v2 section but not counted toward specification totals.
 
 ---
 *Requirements defined: 2026-09-08*
-*Last updated: 2026-09-08 after roadmap creation (traceability populated)*
+*Last updated: 2026-09-08 after roadmap creation (traceability populated); accounting reconciled to 55 spec requirements on 2026-09-08*

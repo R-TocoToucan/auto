@@ -65,7 +65,7 @@ None yet.
 
 - Gate-1 pre-build decisions (stop mechanism, L2 source, simulator fidelity, order policy) must be resolved and recorded at Phase 1 discuss/plan time — Phase 2 cannot build the simulator's stop-limit state machine until the stop mechanism is frozen.
 - Bithumb API facts flagged "verify at build time" against `apidocs.bithumb.com` before Phase 1 (M1) and Phase 5 (M6A): private WS v1-vs-v2, JWT claim construction, legacy stop-limit fee, pagination cursor inclusivity, per-channel rate limits.
-- REQUIREMENTS.md coverage note previously said 44; the actual v1 REQ-ID count is 51 (all mapped). Coverage note corrected.
+- REQUIREMENTS.md accounting reconciled to **55 total specification requirements = 51 in-scope v1 (all mapped to Phases 1–6) + 4 deferred post-holdout LIVE-01…04** (tracked, not started, not completed, not removed). RSCH-01…04 are supplemental research suggestions outside the 55 spec-requirement bucket.
 
 ## Deferred Items
 

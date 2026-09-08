@@ -43,6 +43,33 @@ alpha. If everything else fails, the validation machinery must not lie.
   (though live sleeve funding itself is out of this milestone)
 <!-- GSD:project-end -->
 
+<!-- USER:safety-start -->
+<!-- Manually maintained. The USER:safety-start/-end tokens are ORDINARY delimiters, NOT a preservation guarantee: GSD's `generate-claude-md` only preserves content INSIDE recognized `GSD:*-start/-end` blocks; a full regeneration with `--force`, or a rebuild that overwrites the file wholesale, will destroy this block. If CLAUDE.md is regenerated, re-apply this block from git history. -->
+
+## Project Safety Rules (invariant across all phases)
+
+These rules bind every plan, task, and code change. They come from `docs/EXECUTION.md` and `docs/RESEARCH.md` and are non-negotiable at any workflow mode.
+
+1. **Holdout opened exactly once.** Only after both FRZ-02 (artifact hash) AND FRZ-03 (Gate-3 risk limits) are complete. A material change after freeze burns the holdout — under Option B, forward-collected data is the only valid replacement.
+2. **Withdrawal permission permanently disabled** on every API key ever configured for this project — public, account-read, and any future trade key. No exceptions.
+3. **`core/` never imports from `broker/`.** The import-direction boundary is CI-enforced; a violation is a build failure, not a warning.
+4. **Exact-decimal money only.** `Decimal` must not be constructed from a `float` literal. A lint/type rule enforces this at commit time. Prices/quantities cross disk/network as strings or `pyarrow.decimal128`, never `float64`.
+5. **Do not edit `docs/RESEARCH.md` or `docs/EXECUTION.md`** during phase work. They are the frozen research + build spine (eight rounds of audit); the Decision Register is amended per gate, not the docs themselves.
+
+### Human-Authorization Boundaries (explicit, in-session confirmation required — never auto-approved)
+
+The following actions require an explicit user confirmation in-session before they occur. Neither `mode: interactive`, `auto_advance: false`, YOLO auto-approval, nor any workflow chain-flag substitutes for a real human authorization at these boundaries:
+
+- **Gate-1 decisions** (venue, target market, timeframe, stop mechanism, calibration option, data + L2 source, simulator fidelity, backtest order policy) — recorded into the Decision Register in Phase 1.
+- **Gate-2 decisions** (metrics, folds, thresholds, statistical tests, E∧R table, paired-resampling procedure, holdout/burn rules) — frozen in Phase 3.
+- **Gate-3 decisions** (capital-isolation mechanism, tiered halts, size-ladder policy, M7 min-duration + min-real-fills, live-escalation rules, re-validation cadence, M8 capital limit) — frozen in Phase 5, before the holdout result is known.
+- **Opening the final holdout** — Phase 6, only after both FRZ-02 (artifact hash) AND FRZ-03 (Gate-3 limits) are complete. This is a one-shot boundary.
+- **Any trade-enabled credential** — creating, requesting, provisioning, storing, activating, or using one. Out of milestone scope; must not occur in Phases 1–6.
+- **Any real-order action against a live venue** — submitting, cancelling, replacing, or modifying an actual order. Out of milestone scope; must not occur in Phases 1–6 regardless of any test-mode framing.
+- **Progression across any phase boundary** — Phase N → Phase N+1 requires an explicit human confirmation. Do not auto-chain phases.
+
+<!-- USER:safety-end -->
+
 <!-- GSD:stack-start source:research/STACK.md -->
 
 ## Technology Stack
