@@ -22,7 +22,7 @@ trading (M6B/M7/M8) is explicitly out of this milestone.
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Safety Foundation + Bithumb Spec Adapter** - Fail-closed safety rails, immutable Decision Register, three-class key policy, and an authenticated read-only fee/tick/min-order snapshot (M0 + M1)
+- [x] **Phase 1: Safety Foundation + Bithumb Spec Adapter** - Fail-closed safety rails, immutable Decision Register, three-class key policy, and an authenticated read-only fee/tick/min-order snapshot (M0 + M1)
 - [ ] **Phase 2: Data Pipeline + Conservative Execution Simulator** - Immutable candle store and the single-chokepoint venue-aware simulator that makes same-candle fills impossible and models the stop-limit state machine (M2 — the core deliverable)
 - [ ] **Phase 3: Preregistered Validation Protocol** - The full research protocol frozen before any candidate: metrics, folds, thresholds, statistical tests, and the Boolean E∧R acceptance table (M3 — Gate 2)
 - [ ] **Phase 4: Baseline + Adaptive Modules Under the Gate** - Preregistered baseline and each module evaluated one at a time within selection windows only, keep/drop by the gate (M4 + M5)
@@ -56,7 +56,7 @@ Plans:
 - [x] 01-01: Config loader + immutable Decision Register + startup self-check (fail-closed)
 - [x] 01-02: Three-class key policy, secret loading, Decimal money type + float-literal lint, risk-denominator vocabulary
 - [x] 01-03: `core/`↔`broker/` import-direction boundary + CI enforcement scaffolding
-- [ ] 01-04: `BithumbSpec` authenticated read adapter, hashed fee/tick/min-order snapshot, per-channel rate limiting
+- [x] 01-04: `BithumbSpec` authenticated read adapter, hashed fee/tick/min-order snapshot, per-channel rate limiting
 
 ### Phase 2: Data Pipeline + Conservative Execution Simulator
 
