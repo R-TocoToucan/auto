@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 1
-current_phase_name: Safety Foundation + Bithumb Spec Adapter
-status: planned
-stopped_at: Phase 1 planned — 4 plans, 43 tasks, plan-check PASS
-last_updated: "2026-09-08T00:00:00.000Z"
+current_phase: 01
+current_phase_name: safety-foundation-bithumb-spec-adapter
+status: executing
+stopped_at: Completed 01-01-PLAN.md
+last_updated: "2026-09-08T09:49:45.471Z"
 last_activity: 2026-09-08
-last_activity_desc: Phase 1 planned (RESEARCH.md + VALIDATION.md + 4 PLAN.md files; plan-checker verified)
+last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 4
-  completed_plans: 0
+  completed_plans: 1
 ---
 
 # Project State
@@ -23,16 +23,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-08)
 
 **Core value:** A trustworthy verdict on whether the strategy has real, cost-and-execution-honest edge — produced by a frozen, hashed artifact evaluated on a holdout opened exactly once.
-**Current focus:** Phase 1 — Safety Foundation + Bithumb Spec Adapter
+**Current focus:** Phase 01 — safety-foundation-bithumb-spec-adapter
 
 ## Current Position
 
-Phase: 1 of 6 (Safety Foundation + Bithumb Spec Adapter)
-Plan: 0 of 4 in current phase
+Phase: 01 (safety-foundation-bithumb-spec-adapter) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-09-08 — Phase 1 planned: RESEARCH.md, VALIDATION.md, 4 PLAN.md files emitted; plan-checker verified all 12 requirements + 5 success criteria covered
+Last activity: 2026-09-08 — Phase 01 execution started
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [███░░░░░░░] 25%
 
 ## Performance Metrics
 
@@ -54,6 +54,11 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: —
 
 *Updated after each plan completion*
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 01 P01 | 22 min | 9 tasks | 25 files |
 
 ## Accumulated Context
 
@@ -65,6 +70,8 @@ Recent decisions affecting current work:
 - Roadmap: 6 phases derived from the authoritative `docs/EXECUTION.md` milestone spine (Gate-1 → M0–M5 → M6A → final freeze → one-time holdout); live trading (M6B/M7/M8) deferred to v2.
 - Roadmap: freeze/holdout boundary kept inviolable — FRZ-02 (artifact hash) and FRZ-03 (Gate-3 limits) both complete in Phase 5 before Phase 6 opens the holdout.
 - Roadmap: M2 (data + simulator) kept as its own phase (Phase 2) as the core deliverable, not diluted with protocol work.
+- [Phase ?]: Plan 01-01: TOML value-deferred sentinel convention — { value = 'unset', frozen_at = 'gateN', frozen_at_phase = N } inline table for D-09/D-41/D-42 fields; pydantic BeforeValidator normalises to None. Stdlib tomllib has no null literal.
+- [Phase ?]: Plan 01-01: All errors declared in errors.py upfront including ProhibitedCredentialDetectedError so validate() can raise uniformly for every capability's trade-cred prohibition check (D-97). The credential-value handling itself is still owned by plan 01-02.
 
 ### Pending Todos
 
@@ -86,6 +93,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-08T08:19:48.064Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-safety-foundation-bithumb-spec-adapter/01-CONTEXT.md
+Last session: 2026-09-08T09:49:45.461Z
+Stopped at: Completed 01-01-PLAN.md
+Resume file: None

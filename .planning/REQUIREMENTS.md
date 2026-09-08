@@ -12,8 +12,8 @@
 
 ### Safety, Config & Keys (M0)
 
-- [ ] **SAFE-01**: Config loader holds the Decision Register (Gate-1/2/3 decisions) as immutable typed values
-- [ ] **SAFE-02**: Startup self-check prints resolved Gate-1 decisions, key class, and risk denominators, and refuses to run if any required decision or denominator is missing
+- [x] **SAFE-01**: Config loader holds the Decision Register (Gate-1/2/3 decisions) as immutable typed values
+- [x] **SAFE-02**: Startup self-check prints resolved Gate-1 decisions, key class, and risk denominators, and refuses to run if any required decision or denominator is missing
 - [ ] **SAFE-03**: Three-class API key policy enforced (public / account-read / trade); no key ever has withdrawal permission
 - [ ] **SAFE-04**: Secrets loaded from env/secret store only, never from `config.json` or source; secret paths are git-ignored
 - [ ] **SAFE-05**: Exact-decimal money type used for all price/qty/PnL; a lint/type rule rejects constructing a decimal from a float literal
@@ -133,8 +133,8 @@ Every v1 requirement maps to exactly one phase. See `.planning/ROADMAP.md`.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SAFE-01 | Phase 1 | Pending |
-| SAFE-02 | Phase 1 | Pending |
+| SAFE-01 | Phase 1 | Complete |
+| SAFE-02 | Phase 1 | Complete |
 | SAFE-03 | Phase 1 | Pending |
 | SAFE-04 | Phase 1 | Pending |
 | SAFE-05 | Phase 1 | Pending |
