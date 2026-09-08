@@ -1,0 +1,59 @@
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Tool caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+
+# --- Build / distribution artifacts ---
+build/
+dist/
+*.egg-info/
+*.egg
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Runtime state (D-31: local SQLite state DB, never committed) ---
+state/
+
+# --- Snapshot artifacts (raw authenticated responses; only sanitized fixtures are committed) ---
+artifacts/spec_snapshots/
+
+# --- Verification bundles: raw authenticated responses (D-77) — sanitized fixtures ARE committed ---
+verification/bithumb/*/raw_*
+
+# --- Secrets: never committed under any name ---
+*.env
+.env
+.env.*
+!.env.example
+secrets.env
+secrets.toml
+credentials.json
+
+# --- Windows local secrets convention (D-65) ---
+# Example external secrets path: %LOCALAPPDATA%\BithumbBot\secrets.env
+# That path is outside the repo, but guard against any accidental in-repo copy.
+BithumbBot/secrets.env

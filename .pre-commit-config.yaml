@@ -1,0 +1,61 @@
+# Pre-commit skeleton for plan 01-01.
+#
+# Active hooks:
+#   - ruff (lint)
+#   - ruff-format
+#   - mypy (via local system entry)
+#
+# Placeholder (inert) hooks — wired to functional entries later:
+#   - decimal-float-literal-check   # wired by plan 01-02 task 01-02-03
+#   - import-linter                 # wired by plan 01-03 task 01-03-03
+#
+# The placeholder hook ids intentionally exist NOW so the ids are reserved
+# and every downstream commit surface (this file, pre-commit's own hook cache,
+# CI, and docs) already knows their names before their entries become
+# functional. Both placeholders use `entry: true` (a no-op shell builtin that
+# exits 0), `always_run: false`, and `pass_filenames: false` so they are
+# inert and cannot mask a real violation before their real implementation
+# lands.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (strict)
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+        args: ["src"]
+
+      # ---------------------------------------------------------------------
+      # PLACEHOLDER — inert hook. Wired to a functional entry by
+      # plan 01-02 task 01-02-03 (tools.decimal_ast_check).
+      # DO NOT change `entry` here — plan 01-02 owns that swap.
+      # ---------------------------------------------------------------------
+      - id: decimal-float-literal-check  # wired by plan 01-02
+        name: reject Decimal(<float literal>) — placeholder (wired by plan 01-02)
+        entry: "true"
+        language: system
+        pass_filenames: false
+        always_run: false
+        files: '^$'
+
+      # ---------------------------------------------------------------------
+      # PLACEHOLDER — inert hook. Wired to a functional entry by
+      # plan 01-03 task 01-03-03 (lint-imports).
+      # DO NOT change `entry` here — plan 01-03 owns that swap.
+      # ---------------------------------------------------------------------
+      - id: import-linter  # wired by plan 01-03
+        name: import-linter (core must not import broker) — placeholder (wired by plan 01-03)
+        entry: "true"
+        language: system
+        pass_filenames: false
+        always_run: false
+        files: '^$'
