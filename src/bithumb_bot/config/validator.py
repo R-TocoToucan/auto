@@ -17,10 +17,15 @@ approved freezes in Phase 3 / Phase 5.
 D-89: an unknown capability raises `UnknownCapabilityError` — capability
 requirements never default to an empty set.
 
-D-97: trade-credential prohibition is enforced by the secrets loader in
-plan 01-02. This module STUBS the check by raising if it detects the
-trade-credential class as an environment variable; the actual value is
-never inspected here or elsewhere (D-68 / D-70).
+D-97: trade-credential prohibition is enforced by `secrets.loader.
+reject_trade_credentials` — this module invokes it as its final check
+for every capability with `trade_cred_prohibited=True` (which is every
+registered capability per D-97). On rejection this validator turns the
+raised `ProhibitedCredentialDetectedError` into a clean
+`ValidationResult(ok=False, missing=("trade_credential_prohibited",),
+reason=...)` so the CLI dispatcher can print a uniform refusal instead
+of a Python traceback. The actual credential value is never inspected
+anywhere in this call chain (D-68 / D-70).
 """
 
 from __future__ import annotations
@@ -39,6 +44,10 @@ from bithumb_bot.errors import (
     Gate1LoadError,
     ProhibitedCredentialDetectedError,
     UnknownCapabilityError,
+)
+from bithumb_bot.secrets.loader import (
+    load_secrets,
+    reject_trade_credentials,
 )
 
 
@@ -101,19 +110,33 @@ def _resolve_repo_root() -> Path:
     return Path.cwd()
 
 
-def _check_trade_credential_prohibition() -> ValidationResult | None:
+def _check_trade_credential_prohibition(repo_root: Path) -> ValidationResult | None:
     """Return a failing ValidationResult iff a trade-cred env var is set.
 
     D-68 / D-97: trade-permission credentials are prohibited pre-M6B for
     every registered capability. Only the credential *class* is reported —
-    the value is never inspected. If detected, we RAISE
-    `ProhibitedCredentialDetectedError` so the CLI dispatcher surfaces a
-    hard refusal (this is a security-critical condition, not a soft "prereq
-    missing").
+    the value is never inspected.
+
+    Delegates to `bithumb_bot.secrets.loader.reject_trade_credentials`
+    (task 01-02-05). When that raises `ProhibitedCredentialDetectedError`
+    we translate it into a clean `ValidationResult(ok=False, ...)` so
+    the CLI dispatcher can print a uniform refusal string. The reason
+    text carries only the credential class ("trade") — no substring of
+    the value is ever spliced in (D-70).
     """
-    for env_name in TRADE_ENV_VARS:
-        if os.environ.get(env_name):
-            raise ProhibitedCredentialDetectedError(credential_class="trade")
+    try:
+        settings = load_secrets(repo_root)
+        reject_trade_credentials(settings)
+    except ProhibitedCredentialDetectedError as exc:
+        return ValidationResult(
+            ok=False,
+            missing=("trade_credential_prohibited",),
+            reason=(
+                f"Trade credential class detected in environment "
+                f"({exc.credential_class!r}) — refused (D-68 / D-97). "
+                "Value not inspected."
+            ),
+        )
     return None
 
 
@@ -192,9 +215,6 @@ def validate(capability: tuple[str, str]) -> ValidationResult:
 
     Raises:
         UnknownCapabilityError: capability not in REGISTRY (D-89).
-        ProhibitedCredentialDetectedError: trade-credential env vars are
-            set (D-68 / D-97) — refused for EVERY registered capability
-            pre-M6B.
     """
     row = REGISTRY.get(capability)
     if row is None:
@@ -203,13 +223,16 @@ def validate(capability: tuple[str, str]) -> ValidationResult:
             "fail hard; capability requirements never default to an empty set (D-89)."
         )
 
-    # Hard trade-cred check (D-97) — applies to every registered capability
-    # pre-M6B. Raises rather than returning a soft result because the
-    # condition indicates a security-relevant configuration issue.
-    if row.trade_cred_prohibited:
-        _check_trade_credential_prohibition()
-
     repo_root = _resolve_repo_root()
+
+    # Trade-cred prohibition (D-97) — applies to every registered capability
+    # pre-M6B. Translated from ProhibitedCredentialDetectedError into a
+    # clean ValidationResult so the CLI dispatcher (plan 01-03) can print
+    # a uniform refusal string. Value is never inspected (D-70).
+    if row.trade_cred_prohibited:
+        trade_result = _check_trade_credential_prohibition(repo_root)
+        if trade_result is not None:
+            return trade_result
 
     # Ordering of checks: gate1 → gate2 → gate3 → cred. First failing prereq
     # short-circuits (D-59: load only what's required).
