@@ -27,6 +27,17 @@ dev = [
     "pre-commit",
 ]
 
+# ---------------------------------------------------------------------------
+# Console scripts (D-85 / D-99)
+#
+# The single `bt` console script binds to `bithumb_bot.cli.main:main` — the
+# dispatcher that validates every capability against `validate()` before
+# invoking any handler. There is deliberately ONE console script; no
+# per-verb entry points exist. Reserved verbs (D-87) refuse uniformly.
+# ---------------------------------------------------------------------------
+[project.scripts]
+bt = "bithumb_bot.cli.main:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
