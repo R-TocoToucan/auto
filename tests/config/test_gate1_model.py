@@ -47,22 +47,24 @@ class TestDecimalFromStr:
         assert _decimal_from_str(d) is d
 
     def test_float_raises(self) -> None:
-        with pytest.raises(TypeError):
+        # ValueError (not TypeError) is what pydantic v2 wraps into
+        # ValidationError; validators must raise ValueError/AssertionError.
+        with pytest.raises(ValueError):
             _decimal_from_str(0.1)
 
     def test_int_raises_for_strict_decimal(self) -> None:
         # int would otherwise be exact, but the whole point of StrictDecimal is
         # to force operators to declare monetary values as quoted strings so
         # they are also unambiguous at the TOML source level.
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             _decimal_from_str(100000)
 
     def test_bool_raises(self) -> None:
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             _decimal_from_str(True)
 
     def test_none_raises(self) -> None:
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             _decimal_from_str(None)
 
 
