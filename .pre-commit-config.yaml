@@ -5,29 +5,28 @@
 #   - ruff-format
 #   - mypy (via local system entry)
 #   - decimal-float-literal-check   # wired by plan 01-02 task 01-02-03 (D-49/D-72)
-#
-# Placeholder (inert) hooks — wired to functional entries later:
-#   - import-linter                 # wired by plan 01-03 task 01-03-03
-#
-# The remaining placeholder id (`import-linter`) intentionally exists NOW so
-# the id is reserved and every downstream commit surface already knows its
-# name before its entry becomes functional. It uses `entry: true` (a no-op
-# shell builtin), `always_run: false`, and `pass_filenames: false` so it is
-# inert and cannot mask a real violation before its real implementation lands.
+#   - import-linter                 # wired by plan 01-03 task 01-03-03 (D-71/D-73)
 #
 # ---------------------------------------------------------------------------
-# CI wiring note for `decimal-float-literal-check` (D-73)
+# CI wiring — the single documented quality-command form (D-73, D-71)
 # ---------------------------------------------------------------------------
 # Pre-commit alone is not enforcement — a developer can `git commit --no-verify`
-# past it. CI MUST re-run the same check across every tracked `.py` file so
-# there is no path around the D-49 constraint. The exact command CI SHALL
-# execute (choose whichever CI provider the operator later configures) is:
+# past it. CI MUST re-run the same checks so there is no path around the
+# D-49 / D-71 constraints. The exact command CI SHALL execute (choose
+# whichever CI provider the operator later configures) is the composed
+# single-line quality-command form that matches VALIDATION.md's static gate:
 #
-#   python -m tools.decimal_ast_check \
+#   uv run lint-imports && \
+#     uv run python -m tools.decimal_ast_check \
 #       $(git ls-files '*.py' | grep -Ev '^tests/tools/decimal_ast/(positive|nested|syntax_error)/')
 #
-# The `grep -Ev` filter mirrors the `exclude:` regex in the hook definition
-# below so the intentional-violation fixture files stay out of both surfaces.
+# The `grep -Ev` filter mirrors the `exclude:` regex in the
+# `decimal-float-literal-check` hook definition below so the
+# intentional-violation fixture files stay out of both surfaces.
+# `lint-imports` requires `import-linter` to be installed AND the whole
+# project (root_package = "bithumb_bot") to be importable from the active
+# environment — that is why the `import-linter` hook below uses
+# `language: system, pass_filenames: false, always_run: true` (Finding 1).
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.6.9
@@ -59,14 +58,19 @@ repos:
         pass_filenames: true
 
       # ---------------------------------------------------------------------
-      # PLACEHOLDER — inert hook. Wired to a functional entry by
-      # plan 01-03 task 01-03-03 (lint-imports).
-      # DO NOT change `entry` here — plan 01-03 owns that swap.
+      # Functional Import Linter contract enforcement (D-71 / D-73).
+      # Wired here by plan 01-03 task 01-03-03. See top-of-file CI note.
+      #
+      # `language: system` — the checker needs the WHOLE project importable
+      # (grimp inspects the real module graph), not a per-file isolated env
+      # (Finding 1).
+      # `pass_filenames: false` + `always_run: true` — contract violation is
+      # a whole-project property; running on a subset of changed files would
+      # let a violation slip in via an unrelated commit.
       # ---------------------------------------------------------------------
-      - id: import-linter  # wired by plan 01-03
-        name: import-linter (core must not import broker) — placeholder (wired by plan 01-03)
-        entry: "true"
+      - id: import-linter
+        name: import-linter (core must not import broker)
+        entry: lint-imports
         language: system
         pass_filenames: false
-        always_run: false
-        files: '^$'
+        always_run: true
