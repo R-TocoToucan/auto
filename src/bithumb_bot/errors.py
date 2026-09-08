@@ -16,11 +16,21 @@ Exception surface added incrementally by phase:
 - Phase 1 / plan 01-02:
   * `ProhibitedCredentialDetectedError` — trade-permission credential class
                                           detected in the environment
-                                          before M6B (D-68, D-97). Imported
-                                          here now so downstream modules
-                                          can `except` it starting today;
-                                          its raising site is added by
-                                          plan 01-02's secrets loader.
+                                          before M6B (D-68, D-97). Raising
+                                          site: `secrets.loader.reject_
+                                          trade_credentials`. Class-only
+                                          reporting (D-70).
+  * `SecretsFileInsideRepoError`        — `BITHUMB_BOT_SECRETS_FILE` env
+                                          points at a path that resolves
+                                          inside the repository — the file
+                                          MUST live outside the repo tree
+                                          (D-65, symlink-safe).
+  * `AmbiguousSecretsConfigurationError`— the same credential key is
+                                          defined in BOTH the OS environment
+                                          AND the external secrets file
+                                          with DIFFERENT values (D-66
+                                          rule 3). Prevents silent
+                                          precedence-side selection.
 """
 
 from __future__ import annotations
@@ -54,10 +64,12 @@ class UnknownCapabilityError(BithumbBotError):
 class ProhibitedCredentialDetectedError(BithumbBotError):
     """Raised when a trade-permission credential class is detected pre-M6B.
 
-    D-68 / D-97: the validator MUST report only that the credential *class*
-    was detected. Its *value* MUST NEVER appear in any exception message,
-    log line, or serialized surface — this exception carries only the
-    credential class, deliberately.
+    D-68 / D-97: the loader / validator MUST report only that the
+    credential *class* was detected. Its *value* MUST NEVER appear in any
+    exception message, log line, or serialized surface — this exception
+    carries only the credential class, deliberately. The constructor
+    accepts only `credential_class` as a keyword arg so no future refactor
+    can accidentally start passing values through.
     """
 
     def __init__(self, *, credential_class: str) -> None:
@@ -70,9 +82,55 @@ class ProhibitedCredentialDetectedError(BithumbBotError):
         self.credential_class = credential_class
 
 
+class SecretsFileInsideRepoError(BithumbBotError):
+    """Raised when `BITHUMB_BOT_SECRETS_FILE` resolves inside the repo tree.
+
+    D-65: the external secrets file MUST live outside the repository so
+    a stray `git add -f` cannot commit credential material. The check is
+    symlink-safe — `Path.resolve(strict=True)` follows the symlink to its
+    real target and containment is verified via `Path.is_relative_to` on
+    the fully-resolved repo root.
+
+    Carries only the resolved path (so the operator can fix the config)
+    — never a credential value.
+    """
+
+    def __init__(self, resolved_path: object) -> None:
+        super().__init__(
+            f"BITHUMB_BOT_SECRETS_FILE resolves to {resolved_path!r}, which "
+            "is inside the repository tree. The external secrets file MUST "
+            "live outside the repo (D-65). Symlinks are resolved before this "
+            "check; place the real file on a path that has no ancestor equal "
+            "to the repository root."
+        )
+        self.resolved_path = resolved_path
+
+
+class AmbiguousSecretsConfigurationError(BithumbBotError):
+    """Raised when a credential key has DIFFERENT values in env AND the file.
+
+    D-66 rule 3: same-key different-value across sources is ambiguous —
+    silently choosing one side (env-wins, file-wins) hides a
+    configuration drift that could put stale credentials into service.
+
+    Carries only the credential *key name* — never either side's value.
+    """
+
+    def __init__(self, credential_key: str) -> None:
+        super().__init__(
+            f"Credential key {credential_key!r} is defined in BOTH the OS "
+            "environment AND the external secrets file with DIFFERENT "
+            "values. Precedence is undefined for this state (D-66 rule 3); "
+            "remove one source or reconcile the values."
+        )
+        self.credential_key = credential_key
+
+
 __all__ = [
+    "AmbiguousSecretsConfigurationError",
     "BithumbBotError",
     "Gate1LoadError",
     "ProhibitedCredentialDetectedError",
+    "SecretsFileInsideRepoError",
     "UnknownCapabilityError",
 ]
