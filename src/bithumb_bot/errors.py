@@ -244,6 +244,31 @@ class AuthConstructionError(BithumbBotError):
         super().__init__("Auth construction failed — see structured logs")
 
 
+class CandleValidationError(BithumbBotError):
+    """Raised when a candle row or page fails structural validation.
+
+    Covers impossible OHLC (``low > open|close`` or ``high < open|close``),
+    non-monotonic server order within a page, cross-boundary duplicates
+    whose OHLCV values conflict, wrong ``market`` or ``unit`` fields, and
+    malformed timestamps. The first failing row is named in the message
+    so an operator can locate it in the raw page. No fabrication path
+    exists — missing intervals are REPORTED separately, never synthesized.
+    """
+
+
+class PublicRestNotVerifiedError(BithumbBotError):
+    """Raised when a real network fetch is attempted before the public
+    REST rate-limit configuration is a frozen M1 verification item.
+
+    The public-REST TokenBucket in :mod:`bithumb_bot.bithumb_spec.
+    rate_limits` currently ships a documented TEST-ONLY sentinel
+    (Open Verification Item #3). Real network use is fail-closed until
+    a verified capacity/refill_rate is frozen. Tests bypass this guard
+    by injecting ``httpx.MockTransport`` — the guard fires only when
+    the caller lets ``transport`` default to ``None``.
+    """
+
+
 class UnresolvedFactError(BithumbBotError):
     """Raised when a `VERIFICATION.md` bundle contains an unresolved fact.
 
@@ -267,9 +292,11 @@ __all__ = [
     "AmbiguousSecretsConfigurationError",
     "AuthConstructionError",
     "BithumbBotError",
+    "CandleValidationError",
     "CriticalCorruptionAlert",
     "Gate1LoadError",
     "ProhibitedCredentialDetectedError",
+    "PublicRestNotVerifiedError",
     "SecretsFileInsideRepoError",
     "SidecarHashMismatchError",
     "SnapshotAlreadyConsumedError",
