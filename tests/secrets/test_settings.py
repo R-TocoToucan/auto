@@ -3,7 +3,7 @@
 Covers task 01-02-04 Behavior contract:
 
 * Field set is EXACTLY the four D-67 credentials — no more, no less, no
-  withdrawal-related field.
+  withdrawal-related field (D-69).
 * All four fields are `SecretStr | None`, defaulting to `None`, so unset
   env yields `None` (letting the loader distinguish "unset" from
   "present-but-empty").

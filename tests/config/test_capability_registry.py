@@ -243,6 +243,7 @@ class TestNoLiveOrM6BVerbs:
             assert "live" not in subverb.lower()
 
     def test_no_withdraw_key_in_registry(self) -> None:
+        # D-69: no withdrawal verb or subverb is registered anywhere.
         for verb, subverb in REGISTRY:
             assert "withdraw" not in verb.lower()
             assert "withdraw" not in subverb.lower()

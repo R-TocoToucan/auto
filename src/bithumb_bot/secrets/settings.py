@@ -11,10 +11,10 @@ Exactly two credential classes exist for this project (D-67):
 
 **No withdrawal credential exists anywhere in this project (D-69)**.
 Withdrawal permission is permanently disabled on every API key ever
-configured for `bithumb_bot`, per the project's invariant safety rules.
-This module intentionally has zero `withdrawal_*` fields and any commit
-that adds one is a hard failure (see
-`tests/secrets/test_no_withdrawal_credential.py`).
+configured for `bithumb_bot`, per the project's invariant safety
+rules. This module intentionally has zero `withdrawal_*` fields (D-69)
+and any commit that adds one is a hard failure — see the D-69 static
+sweep in `tests/secrets/test_no_withdrawal_credential.py`.
 
 Every field is typed `Optional[SecretStr]` and defaults to `None`. This
 lets `bithumb_bot.secrets.loader.load_secrets` distinguish "unset" from
