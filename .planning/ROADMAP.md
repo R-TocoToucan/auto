@@ -45,16 +45,16 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Using the account-read JWT key, the spec adapter fetches `bid_fee`/`ask_fee`/`maker_bid_fee`/`maker_ask_fee`, min order size, tick/step, and supported order types, records fees per experiment, and persists them as a SHA-256-hashed snapshot the simulator consumes (never re-queried mid-simulation).
   5. Tick/step rounding and minimum-order boundary unit tests pass; per-channel token-bucket rate limiting + backoff applies independently to public REST, private REST, and WebSocket.
 
-**Plans**: 1/4 plans executed
+**Plans**: 2/4 plans executed
 
 Plans:
 
 - [x] 01-01-PLAN.md
-- [ ] 01-02-PLAN.md
+- [x] 01-02-PLAN.md
 - [ ] 01-03-PLAN.md
 - [ ] 01-04-PLAN.md
 - [x] 01-01: Config loader + immutable Decision Register + startup self-check (fail-closed)
-- [ ] 01-02: Three-class key policy, secret loading, Decimal money type + float-literal lint, risk-denominator vocabulary
+- [x] 01-02: Three-class key policy, secret loading, Decimal money type + float-literal lint, risk-denominator vocabulary
 - [ ] 01-03: `core/`↔`broker/` import-direction boundary + CI enforcement scaffolding
 - [ ] 01-04: `BithumbSpec` authenticated read adapter, hashed fee/tick/min-order snapshot, per-channel rate limiting
 
@@ -174,7 +174,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Safety Foundation + Bithumb Spec Adapter | 1/4 | In Progress|  |
+| 1. Safety Foundation + Bithumb Spec Adapter | 2/4 | In Progress|  |
 | 2. Data Pipeline + Conservative Execution Simulator | 0/4 | Not started | - |
 | 3. Preregistered Validation Protocol | 0/3 | Not started | - |
 | 4. Baseline + Adaptive Modules Under the Gate | 0/4 | Not started | - |

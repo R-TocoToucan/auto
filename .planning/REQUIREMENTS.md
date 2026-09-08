@@ -14,11 +14,11 @@
 
 - [x] **SAFE-01**: Config loader holds the Decision Register (Gate-1/2/3 decisions) as immutable typed values
 - [x] **SAFE-02**: Startup self-check prints resolved Gate-1 decisions, key class, and risk denominators, and refuses to run if any required decision or denominator is missing
-- [ ] **SAFE-03**: Three-class API key policy enforced (public / account-read / trade); no key ever has withdrawal permission
-- [ ] **SAFE-04**: Secrets loaded from env/secret store only, never from `config.json` or source; secret paths are git-ignored
-- [ ] **SAFE-05**: Exact-decimal money type used for all price/qty/PnL; a lint/type rule rejects constructing a decimal from a float literal
+- [x] **SAFE-03**: Three-class API key policy enforced (public / account-read / trade); no key ever has withdrawal permission
+- [x] **SAFE-04**: Secrets loaded from env/secret store only, never from `config.json` or source; secret paths are git-ignored
+- [x] **SAFE-05**: Exact-decimal money type used for all price/qty/PnL; a lint/type rule rejects constructing a decimal from a float literal
 - [ ] **SAFE-06**: `core/` (offline, deterministic, hashable) never imports from `broker/`; the import-direction boundary is checked automatically
-- [ ] **SAFE-07**: Risk-denominator vocabulary defined and documented (planned_stop_loss vs max_market_loss vs max_operational_loss; position_fraction vs risk_per_trade)
+- [x] **SAFE-07**: Risk-denominator vocabulary defined and documented (planned_stop_loss vs max_market_loss vs max_operational_loss; position_fraction vs risk_per_trade)
 
 ### Bithumb Spec Adapter (M1 — authenticated read, no trade)
 
@@ -135,11 +135,11 @@ Every v1 requirement maps to exactly one phase. See `.planning/ROADMAP.md`.
 |-------------|-------|--------|
 | SAFE-01 | Phase 1 | Complete |
 | SAFE-02 | Phase 1 | Complete |
-| SAFE-03 | Phase 1 | Pending |
-| SAFE-04 | Phase 1 | Pending |
-| SAFE-05 | Phase 1 | Pending |
+| SAFE-03 | Phase 1 | Complete |
+| SAFE-04 | Phase 1 | Complete |
+| SAFE-05 | Phase 1 | Complete |
 | SAFE-06 | Phase 1 | Pending |
-| SAFE-07 | Phase 1 | Pending |
+| SAFE-07 | Phase 1 | Complete |
 | SPEC-01 | Phase 1 | Pending |
 | SPEC-02 | Phase 1 | Pending |
 | SPEC-03 | Phase 1 | Pending |

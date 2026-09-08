@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: safety-foundation-bithumb-spec-adapter
 status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-09-08T09:49:45.471Z"
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-09-08T10:26:33.256Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 4
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 01 (safety-foundation-bithumb-spec-adapter) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-09-08 — Phase 01 execution started
 
-Progress: [███░░░░░░░] 25%
+Progress: [█████░░░░░] 50%
 
 ## Performance Metrics
 
@@ -72,6 +72,9 @@ Recent decisions affecting current work:
 - Roadmap: M2 (data + simulator) kept as its own phase (Phase 2) as the core deliverable, not diluted with protocol work.
 - [Phase ?]: Plan 01-01: TOML value-deferred sentinel convention — { value = 'unset', frozen_at = 'gateN', frozen_at_phase = N } inline table for D-09/D-41/D-42 fields; pydantic BeforeValidator normalises to None. Stdlib tomllib has no null literal.
 - [Phase ?]: Plan 01-01: All errors declared in errors.py upfront including ProhibitedCredentialDetectedError so validate() can raise uniformly for every capability's trade-cred prohibition check (D-97). The credential-value handling itself is still owned by plan 01-02.
+- [Phase ?]: Plan 01-02: Loader uses model_copy(update=...) overlay for file-only credential keys instead of pydantic-settings _env_file= — keeps env-wins precedence and ambiguous-mixed detection in auditable loader code.
+- [Phase ?]: Plan 01-02: SecretStr | None (Optional) field typing lets loader distinguish unset (None) from present-but-empty (SecretStr('')) — different failure reasons for each case.
+- [Phase ?]: Plan 01-02: AST checker allows Decimal.from_float(...) — explicit float conversion is intentional. Silent Decimal(0.1) is the D-49 pathology; explicit .from_float is out of scope.
 
 ### Pending Todos
 
@@ -93,6 +96,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-08T09:49:45.461Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-09-08T10:26:32.655Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None
