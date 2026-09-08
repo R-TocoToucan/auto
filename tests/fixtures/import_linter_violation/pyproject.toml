@@ -1,0 +1,27 @@
+# =============================================================================
+# Negative-fixture Import Linter config (D-73).
+#
+# This mirrors the shape of the real `[tool.importlinter]` block in the
+# repository's own pyproject.toml but points at `badpkg` — a deliberately
+# broken package that imports `badpkg.broker` from `badpkg.core`. The
+# accompanying runner test in `tests/import_boundary/` invokes
+# `lint-imports --config <this file>` and asserts a non-zero exit,
+# proving the contract mechanically fails when the boundary is crossed.
+#
+# This fixture is committed once and never mutated at test time.
+# =============================================================================
+
+[project]
+name = "badpkg"
+version = "0.0.0"
+description = "Negative fixture — DO NOT INSTALL. See docstring."
+
+[tool.importlinter]
+root_package = "badpkg"
+exclude_type_checking_imports = false
+
+[[tool.importlinter.contracts]]
+name = "Core must not import broker"
+type = "forbidden"
+source_modules = ["badpkg.core"]
+forbidden_modules = ["badpkg.broker"]
