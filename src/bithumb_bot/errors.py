@@ -31,6 +31,46 @@ Exception surface added incrementally by phase:
                                           with DIFFERENT values (D-66
                                           rule 3). Prevents silent
                                           precedence-side selection.
+- Phase 1 / plan 01-04:
+  * `SnapshotAlreadyConsumedError`      — an atomic-write / sidecar target
+                                          already exists on disk AND its
+                                          sidecar-recorded hash matches
+                                          the on-disk file's hash (D-76
+                                          "never overwrite a previously
+                                          consumed snapshot").
+  * `CriticalCorruptionAlert`           — an atomic-write target already
+                                          exists AND its sidecar-recorded
+                                          hash does NOT match the on-disk
+                                          file — the on-disk file is
+                                          renamed to `_corrupt_<ts>_...`
+                                          and this exception is raised
+                                          loudly (T-1-04-09).
+  * `SidecarHashMismatchError`          — a snapshot load re-computed the
+                                          SHA-256 of the on-disk bytes and
+                                          it did not match the sidecar
+                                          value; the snapshot has been
+                                          tampered or truncated. Raise
+                                          site: `snapshot.load_snapshot`.
+  * `SnapshotValidationError`           — a snapshot passed the sidecar
+                                          hash check but its structure
+                                          (schema version, required
+                                          verification_status keys) is
+                                          invalid per D-80.
+  * `AuthConstructionError`             — an exception was raised while
+                                          building a JWT bearer token.
+                                          The exception carries only the
+                                          string ``see structured logs``
+                                          — the underlying error text and
+                                          any credential material remain
+                                          out of the exception message
+                                          per D-70 / T-1-04-01.
+  * `UnresolvedFactError`               — a `VERIFICATION.md` bundle was
+                                          submitted for validation with
+                                          at least one required
+                                          build-time fact still in the
+                                          ``unresolved`` state. The
+                                          verifier refuses to advance
+                                          per D-78.
 """
 
 from __future__ import annotations
@@ -126,11 +166,114 @@ class AmbiguousSecretsConfigurationError(BithumbBotError):
         self.credential_key = credential_key
 
 
+class SnapshotAlreadyConsumedError(BithumbBotError):
+    """Raised when an atomic-write target already exists with a matching sidecar.
+
+    D-76: "never overwrite a previously consumed snapshot". The
+    ``guard_against_overwrite`` primitive raises this exception when the
+    target path exists AND its sidecar SHA-256 matches the on-disk file
+    — i.e. the previously written snapshot is intact and MUST NOT be
+    silently replaced.
+    """
+
+    def __init__(self, target: object) -> None:
+        super().__init__(
+            f"Refusing to overwrite previously consumed snapshot at "
+            f"{target!r} (D-76). Delete the existing file explicitly if "
+            "you truly want to replace it."
+        )
+        self.target = target
+
+
+class CriticalCorruptionAlert(BithumbBotError):
+    """Raised when an existing snapshot's on-disk bytes do NOT match its sidecar.
+
+    T-1-04-09 branch (b): the target path exists but the sidecar hash
+    disagrees with the on-disk file. This is a critical integrity
+    condition: the file is renamed to ``_corrupt_<ts>_<name>`` and this
+    exception is raised so the operator is alerted rather than silently
+    overwriting corrupt evidence.
+    """
+
+    def __init__(self, corrupt_path: object) -> None:
+        super().__init__(
+            f"CRITICAL: existing snapshot at {corrupt_path!r} does NOT "
+            "match its sidecar hash. The file has been renamed for forensic "
+            "review; do NOT overwrite. Investigate the source of corruption "
+            "before writing a new snapshot in the same location."
+        )
+        self.corrupt_path = corrupt_path
+
+
+class SidecarHashMismatchError(BithumbBotError):
+    """Raised on `load_snapshot` when the recomputed SHA-256 differs from the sidecar.
+
+    T-1-04-03: the snapshot file has been tampered, truncated, or
+    otherwise mutated after its sidecar was written. The loader refuses
+    to hand the parsed model to the simulator. Carries the path only.
+    """
+
+    def __init__(self, path: object) -> None:
+        super().__init__(
+            f"Snapshot at {path!r} failed sidecar hash verification. "
+            "The on-disk bytes do not match the recorded SHA-256; the "
+            "snapshot MUST NOT be consumed by the simulator (D-79)."
+        )
+        self.path = path
+
+
+class SnapshotValidationError(BithumbBotError):
+    """Raised when a snapshot's structure is invalid per D-75 / D-80.
+
+    Distinct from ``SidecarHashMismatchError`` — the sidecar was fine but
+    the parsed model fails a required-content invariant (missing schema
+    version, missing required ``verification_status`` key per D-83, etc.).
+    """
+
+
+class AuthConstructionError(BithumbBotError):
+    """Raised when JWT construction fails (D-70 / T-1-04-01).
+
+    The exception message is fixed to ``see structured logs`` — the
+    original error text and any credential material are deliberately
+    NOT spliced in. Structured logs (with ``redact_secrets`` in the
+    processor chain) carry any diagnostic detail with secrets masked.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Auth construction failed — see structured logs")
+
+
+class UnresolvedFactError(BithumbBotError):
+    """Raised when a `VERIFICATION.md` bundle contains an unresolved fact.
+
+    D-78: every required build-time fact MUST reach status ``confirmed``
+    or ``contradicted`` before ``bt m1 verify-facts`` advances. A fact
+    still marked ``unresolved`` (or unchecked entirely) fails this
+    check with the fact name.
+    """
+
+    def __init__(self, fact_name: str) -> None:
+        super().__init__(
+            f"VERIFICATION.md fact {fact_name!r} is still unresolved. "
+            "Every required build-time fact must be human-approved as "
+            "'confirmed' or 'contradicted' before this bundle can advance "
+            "(D-78 / D-84)."
+        )
+        self.fact_name = fact_name
+
+
 __all__ = [
     "AmbiguousSecretsConfigurationError",
+    "AuthConstructionError",
     "BithumbBotError",
+    "CriticalCorruptionAlert",
     "Gate1LoadError",
     "ProhibitedCredentialDetectedError",
     "SecretsFileInsideRepoError",
+    "SidecarHashMismatchError",
+    "SnapshotAlreadyConsumedError",
+    "SnapshotValidationError",
     "UnknownCapabilityError",
+    "UnresolvedFactError",
 ]
