@@ -95,10 +95,17 @@ disallow_untyped_defs = false
 # ---------------------------------------------------------------------------
 # Tool: Import Linter (D-71)
 #
-# Only the root_package + exclude_type_checking_imports live here.
-# The [[tool.importlinter.contracts]] block that forbids core → broker
-# is added by plan 01-03 task 01-03-01. Do NOT add the contract here.
+# The root_package + exclude_type_checking_imports were placed by plan 01-01.
+# The forbidden `core → broker` contract was added by plan 01-03 task 01-03-01.
+# `source_modules` and `forbidden_modules` are TOML arrays (Finding 1):
+# INI-style whitespace-separated strings do NOT work in the TOML config.
 # ---------------------------------------------------------------------------
 [tool.importlinter]
 root_package = "bithumb_bot"
 exclude_type_checking_imports = false
+
+[[tool.importlinter.contracts]]
+name = "Core must not import broker"
+type = "forbidden"
+source_modules = ["bithumb_bot.core"]
+forbidden_modules = ["bithumb_bot.broker"]
