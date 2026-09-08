@@ -52,27 +52,30 @@ m1_spec_http_backoff_cap_ms = 5000
 m1_spec_http_jitter = "full"
 
 # D-09 / D-43 — cap fields
-max_validated_notional_krw = null  # frozen at Gate 2 (Phase 3)
+# TOML 1.0.0 has no null literal; value-deferred fields use an inline-table
+# sentinel { value = "unset", frozen_at = "gateN", frozen_at_phase = N } that
+# the pydantic Gate1Decisions loader normalises to Python None.
+max_validated_notional_krw = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
 provisional_engineering_notional_krw = "100000"
 
 # D-41 — Gate-2 schema-frozen fields (value-deferred to Phase 3)
-max_received_trade_delivery_lag_ms = null            # frozen at Gate 2 (Phase 3)
-public_ws_transport_liveness_timeout_ms = null       # frozen at Gate 2 (Phase 3)
-fallback_rest_poll_interval_ms = null                # frozen at Gate 2 (Phase 3)
-trigger_rest_connect_timeout_ms = null               # frozen at Gate 2 (Phase 3)
-trigger_rest_read_timeout_ms = null                  # frozen at Gate 2 (Phase 3)
-max_unverified_interval_ms = null                    # frozen at Gate 2 (Phase 3)
-ws_recovery_stability_window_ms = null               # frozen at Gate 2 (Phase 3)
-ws_recovery_min_valid_events = null                  # frozen at Gate 2 (Phase 3)
+max_received_trade_delivery_lag_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+public_ws_transport_liveness_timeout_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+fallback_rest_poll_interval_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+trigger_rest_connect_timeout_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+trigger_rest_read_timeout_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+max_unverified_interval_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+ws_recovery_stability_window_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+ws_recovery_min_valid_events = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
 
 # D-42 — Gate-3 schema-frozen fields (value-deferred to Phase 5)
-watchdog_heartbeat_interval_ms = null                # frozen at Gate 3 (Phase 5)
-watchdog_lease_ttl_ms = null                         # frozen at Gate 3 (Phase 5)
-ws_reconnect_backoff_initial_ms = null               # frozen at Gate 3 (Phase 5)
-ws_reconnect_backoff_cap_ms = null                   # frozen at Gate 3 (Phase 5)
-ws_reconnect_jitter_policy = null                    # frozen at Gate 3 (Phase 5)
-per_reconnect_cycle_attempt_limit = null             # frozen at Gate 3 (Phase 5)
-reconnect_circuit_breaker_window_ms = null           # frozen at Gate 3 (Phase 5)
+watchdog_heartbeat_interval_ms = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+watchdog_lease_ttl_ms = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+ws_reconnect_backoff_initial_ms = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+ws_reconnect_backoff_cap_ms = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+ws_reconnect_jitter_policy = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+per_reconnect_cycle_attempt_limit = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+reconnect_circuit_breaker_window_ms = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
 """
 
 

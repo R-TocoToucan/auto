@@ -1,0 +1,123 @@
+# =============================================================================
+# Gate-1 Decision Register — frozen
+#
+# This file records the FROZEN Gate-1 decisions from
+# `.planning/phases/01-safety-foundation-bithumb-spec-adapter/01-CONTEXT.md`
+# (§ Implementation Decisions, D-01…D-100). It is PUBLIC configuration:
+# no secrets, no credentials, no absolute filesystem paths (D-57).
+#
+# Loading contract (D-58, D-60, D-61, D-62):
+#   * Parsed via stdlib `tomllib` in BINARY mode (`open(path, "rb")`)
+#   * Validated through frozen pydantic v2 `Gate1Decisions`
+#   * File-bytes SHA-256 is the per-gate provenance hash (feeds config_hash)
+#   * `status = "frozen"` is a hard precondition; any other value → fail closed
+#
+# --- On null / value-deferred fields ---
+#   TOML 1.0.0 (which stdlib `tomllib` implements) has NO `null` literal.
+#   Fields whose SCHEMA is frozen at Gate 1 but whose NUMERIC value is
+#   deferred to Gate 2 (D-41) or Gate 3 (D-42) — plus D-09's
+#   `max_validated_notional_krw` — are recorded here as inline tables:
+#
+#       max_validated_notional_krw = { value = "unset",
+#                                      frozen_at = "gate2",
+#                                      frozen_at_phase = 3 }
+#
+#   The pydantic `Gate1Decisions` loader recognises this `"unset"` sentinel
+#   and normalises it to Python `None`, preserving the plan's semantic
+#   intent (SCHEMA declared here + VALUE frozen later) while remaining
+#   loadable by stdlib `tomllib` at Python 3.11. Every decimal-bearing
+#   FROZEN-value field is a QUOTED STRING (D-49, Finding 3 `StrictDecimal`).
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Provenance (D-61)
+# -----------------------------------------------------------------------------
+schema_version = 1
+status = "frozen"
+approved_at_utc = "2026-09-08T00:00:00Z"
+# Recorded here as a 40-char zero-hash pending the actual freeze commit;
+# updated when the Decision Register is countersigned at Phase-1 close.
+source_commit = "0000000000000000000000000000000000000000"
+research_spec_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+execution_spec_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+
+# -----------------------------------------------------------------------------
+# D-40 — Gate-1 frozen M1 read-only HTTP behavior
+#
+# These values apply ONLY to the M1 spec-fetch HTTP client. They MUST NOT be
+# reused implicitly by the protective-exit path (which has its own Gate-2
+# operational fields, D-41). Retry semantics: network errors, connect/read
+# timeouts, HTTP 408, HTTP 429 per Retry-After when valid, and retryable 5xx
+# (500/502/503/504). Do NOT retry non-retryable 4xx (400/401/403/422/etc).
+# -----------------------------------------------------------------------------
+m1_spec_http_connect_timeout_ms = 5000
+m1_spec_http_read_timeout_ms = 15000
+m1_spec_http_max_attempts = 3
+m1_spec_http_backoff_initial_ms = 500
+m1_spec_http_backoff_cap_ms = 5000
+m1_spec_http_jitter = "full"
+
+
+# -----------------------------------------------------------------------------
+# D-09, D-43 — Applicability cap (max validated notional) + provisional value
+#
+# `max_validated_notional_krw` is value-deferred to Gate 2 (Phase 3) after
+# M2's preregistered observe-only calibration. It is required non-null for
+# any strategy evaluation / selection / holdout (D-89).
+#
+# `provisional_engineering_notional_krw = "100000"` (100_000 KRW) is a
+# TEST-FIXTURE-ONLY value. NEVER a validated cap. NEVER used for strategy
+# evaluation. NEVER carried into holdout. Preregistered hypothetical
+# calibration grids may reference it; strategy returns / benchmarks /
+# selection MUST NOT (D-12).
+# -----------------------------------------------------------------------------
+max_validated_notional_krw = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+provisional_engineering_notional_krw = "100000"
+
+
+# -----------------------------------------------------------------------------
+# D-41 — Gate-2 schema-frozen operational parameters
+#
+# Schemas frozen at Gate 1 (fields declared here); NUMERIC values frozen at
+# Gate 2 in Phase 3 after M1 rate-limit verification + preregistered M2
+# observation window. Any M4/M5 evaluation requires these non-null and frozen.
+#
+# Rationale for the old `max_stream_lag_ms` split into two fields: delivery
+# lag of a received event ≠ absence of trades on an otherwise healthy
+# connection. Transport liveness must use the connection-management
+# heartbeat / PING-PONG behavior plus fallback checks.
+# -----------------------------------------------------------------------------
+max_received_trade_delivery_lag_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+public_ws_transport_liveness_timeout_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+fallback_rest_poll_interval_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+trigger_rest_connect_timeout_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+trigger_rest_read_timeout_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+max_unverified_interval_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+ws_recovery_stability_window_ms = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+ws_recovery_min_valid_events = { value = "unset", frozen_at = "gate2", frozen_at_phase = 3 }
+
+
+# -----------------------------------------------------------------------------
+# D-42 — Gate-3 schema-frozen operational parameters
+#
+# Schemas frozen at Gate 1; NUMERIC values frozen at Gate 3 in Phase 5,
+# BEFORE the final holdout is opened. Load-time invariants (checked once
+# every field is non-null, in Phase 5):
+#
+#   * watchdog_heartbeat_interval_ms < watchdog_lease_ttl_ms
+#   * watchdog_lease_ttl_ms >= 3 * watchdog_heartbeat_interval_ms
+#   * watchdog_lease_ttl_ms > worst_case_in_flight_request_window_ms
+#                              + persistence_margin_ms
+#
+# Lease expiry NEVER authorizes a duplicate order — takeover still requires
+# broker reconciliation (D-36).
+# -----------------------------------------------------------------------------
+watchdog_heartbeat_interval_ms = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+watchdog_lease_ttl_ms = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+ws_reconnect_backoff_initial_ms = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+ws_reconnect_backoff_cap_ms = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+ws_reconnect_jitter_policy = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+per_reconnect_cycle_attempt_limit = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
+reconnect_circuit_breaker_window_ms = { value = "unset", frozen_at = "gate3", frozen_at_phase = 5 }
