@@ -1,21 +1,33 @@
-# Pre-commit skeleton for plan 01-01.
+# Pre-commit configuration.
 #
 # Active hooks:
 #   - ruff (lint)
 #   - ruff-format
 #   - mypy (via local system entry)
+#   - decimal-float-literal-check   # wired by plan 01-02 task 01-02-03 (D-49/D-72)
 #
 # Placeholder (inert) hooks — wired to functional entries later:
-#   - decimal-float-literal-check   # wired by plan 01-02 task 01-02-03
 #   - import-linter                 # wired by plan 01-03 task 01-03-03
 #
-# The placeholder hook ids intentionally exist NOW so the ids are reserved
-# and every downstream commit surface (this file, pre-commit's own hook cache,
-# CI, and docs) already knows their names before their entries become
-# functional. Both placeholders use `entry: true` (a no-op shell builtin that
-# exits 0), `always_run: false`, and `pass_filenames: false` so they are
-# inert and cannot mask a real violation before their real implementation
-# lands.
+# The remaining placeholder id (`import-linter`) intentionally exists NOW so
+# the id is reserved and every downstream commit surface already knows its
+# name before its entry becomes functional. It uses `entry: true` (a no-op
+# shell builtin), `always_run: false`, and `pass_filenames: false` so it is
+# inert and cannot mask a real violation before its real implementation lands.
+#
+# ---------------------------------------------------------------------------
+# CI wiring note for `decimal-float-literal-check` (D-73)
+# ---------------------------------------------------------------------------
+# Pre-commit alone is not enforcement — a developer can `git commit --no-verify`
+# past it. CI MUST re-run the same check across every tracked `.py` file so
+# there is no path around the D-49 constraint. The exact command CI SHALL
+# execute (choose whichever CI provider the operator later configures) is:
+#
+#   python -m tools.decimal_ast_check \
+#       $(git ls-files '*.py' | grep -Ev '^tests/tools/decimal_ast/(positive|nested|syntax_error)/')
+#
+# The `grep -Ev` filter mirrors the `exclude:` regex in the hook definition
+# below so the intentional-violation fixture files stay out of both surfaces.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.6.9
@@ -35,17 +47,16 @@ repos:
         args: ["src"]
 
       # ---------------------------------------------------------------------
-      # PLACEHOLDER — inert hook. Wired to a functional entry by
-      # plan 01-02 task 01-02-03 (tools.decimal_ast_check).
-      # DO NOT change `entry` here — plan 01-02 owns that swap.
+      # Functional decimal-from-float AST checker (D-49, D-72).
+      # Wired here by plan 01-02 task 01-02-03. See top-of-file CI note.
       # ---------------------------------------------------------------------
-      - id: decimal-float-literal-check  # wired by plan 01-02
-        name: reject Decimal(<float literal>) — placeholder (wired by plan 01-02)
-        entry: "true"
+      - id: decimal-float-literal-check
+        name: reject Decimal() constructed from a float/complex literal
+        entry: python -m tools.decimal_ast_check
         language: system
-        pass_filenames: false
-        always_run: false
-        files: '^$'
+        files: \.py$
+        exclude: ^tests/tools/decimal_ast/(positive|nested|syntax_error)/
+        pass_filenames: true
 
       # ---------------------------------------------------------------------
       # PLACEHOLDER — inert hook. Wired to a functional entry by
