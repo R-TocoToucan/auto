@@ -244,6 +244,84 @@ class AuthConstructionError(BithumbBotError):
         super().__init__("Auth construction failed — see structured logs")
 
 
+class MissingIntervalInStopWindowError(BithumbBotError):
+    """Raised when a candle-interval slot between stop activation and the
+    evaluation cursor is not confirmed present.
+
+    Refused whether the slot is:
+
+    * listed in ``CandleDataset.missing_intervals_utc`` (reported gap
+      — the data pipeline knows the candle is missing), OR
+    * simply absent from ``CandleDataset.candles`` without a listing
+      (unreported gap — an inconsistency in the dataset itself).
+
+    Either way the evaluator cannot rule out that the stop should have
+    already triggered inside the missing window, so a trigger decision
+    would be dishonest. The safe answer is refuse and let the caller
+    fetch a complete dataset.
+    """
+
+
+class NoNextCandleError(BithumbBotError):
+    """Raised when :func:`execute_intent` cannot find a fill candle.
+
+    The engine looks for the earliest candle in the dataset whose
+    ``open_time_utc >= intent.signal_ts_utc``. If the dataset ends
+    before that boundary — or the signal fires on the last candle
+    and no later one exists — the fill is impossible without
+    fabricating a price, which the pipeline never does.
+    """
+
+
+class InsufficientCashError(BithumbBotError):
+    """Raised when a buy's ``total_cash_debit_krw`` exceeds available cash.
+
+    Fee-on-top model: the check is ``order_notional + fee <=
+    ledger.cash_krw``. Never partial-fills. The strategy must size
+    down or wait.
+    """
+
+
+class InsufficientPositionError(BithumbBotError):
+    """Raised when a sell's filled qty exceeds the current position."""
+
+
+class BelowMinimumOrderError(BithumbBotError):
+    """Raised when the fill would violate the venue's per-side minimum.
+
+    Buy path: ``order_notional_krw < snapshot.minimums.krw_min_total_bid``.
+    Sell path: ``filled_qty < snapshot.minimums.krw_min_total_ask``
+    (Bithumb's ``ask.min_total`` is a coin-quantity minimum for asks).
+    Also raised when qty-step flooring reduces the order to zero.
+    """
+
+
+class NotionalCapExceededError(BithumbBotError):
+    """Raised when the pre-fee notional exceeds ``max_notional_krw`` (D-09).
+
+    Applied to ``order_notional_krw`` on buys and ``gross_proceeds_krw``
+    on sells — the notional the slippage model is applied to. The cap
+    itself is sourced from ``max_validated_notional_krw`` once frozen
+    at Gate 2, or from the interim ``provisional_engineering_notional_krw``
+    before then. This engine never re-derives the cap — the caller
+    passes it in.
+    """
+
+
+class UnverifiedFeeModelError(BithumbBotError):
+    """Raised when the snapshot's fee-model verification status is
+    inadequate for the requested side.
+
+    * ``confirmed_read_only``    — engine proceeds.
+    * ``provisional_documented`` — engine proceeds ONLY when the caller
+      explicitly opts in via ``ExecutionConfig.allow_provisional_fee_model
+      = True``. Strategy evaluation must NOT opt in; only engine tests
+      with a conservative fixture may.
+    * ``unresolved_until_M6B`` / ``contradicted`` / absent — hard
+      refused; opt-in has no effect.
+    """
+
+
 class CandleValidationError(BithumbBotError):
     """Raised when a candle row or page fails structural validation.
 
@@ -291,10 +369,16 @@ class UnresolvedFactError(BithumbBotError):
 __all__ = [
     "AmbiguousSecretsConfigurationError",
     "AuthConstructionError",
+    "BelowMinimumOrderError",
     "BithumbBotError",
     "CandleValidationError",
     "CriticalCorruptionAlert",
     "Gate1LoadError",
+    "InsufficientCashError",
+    "InsufficientPositionError",
+    "MissingIntervalInStopWindowError",
+    "NoNextCandleError",
+    "NotionalCapExceededError",
     "ProhibitedCredentialDetectedError",
     "PublicRestNotVerifiedError",
     "SecretsFileInsideRepoError",
@@ -303,4 +387,5 @@ __all__ = [
     "SnapshotValidationError",
     "UnknownCapabilityError",
     "UnresolvedFactError",
+    "UnverifiedFeeModelError",
 ]
