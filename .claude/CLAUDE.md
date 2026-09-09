@@ -255,6 +255,8 @@ No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skill
 
 Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
 
+Read `docs/IMPLEMENTATION_SCOPE.md` before implementation. It controls active scope; deferred features must not be implemented without explicit user approval.
+
 Use these entry points:
 
 - `/gsd-quick` for small fixes, doc updates, and ad-hoc tasks
