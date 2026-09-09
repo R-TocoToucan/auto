@@ -28,9 +28,10 @@ from bithumb_bot.errors import (
 
 @pytest.fixture(autouse=True)
 def _refill_sentinel_buckets() -> Any:
-    """The sentinel per-channel buckets (capacity=1, refill=0.5) would
-    otherwise drain across sequential tests and force real 2s waits.
-    Reset both to full before every test in this module."""
+    """The conservative operational per-channel buckets (public_rest 5,
+    private_rest 2, public_ws 1 tokens/s per 2026-09-09) would otherwise
+    drain across sequential tests and force real multi-second waits.
+    Reset every bucket to full before every test in this module."""
     for bucket in (rate_limits.public_rest, rate_limits.private_rest, rate_limits.public_ws):
         bucket._tokens = bucket.capacity  # type: ignore[attr-defined]
         bucket._last_refill = float(bucket._monotonic())  # type: ignore[attr-defined]
