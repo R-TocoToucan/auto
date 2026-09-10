@@ -67,8 +67,9 @@ from bithumb_bot.execution.config import ExecutionConfig
 from bithumb_bot.execution.engine import (
     _build_sell_entry,
     _check_fee_verification,
-    _require_step,
-    _require_tick,
+    _ensure_tick_available,
+    _resolve_step,
+    _resolve_tick_for_price,
     _slippage_and_tick,
 )
 from bithumb_bot.execution.ledger import LedgerEntry, LedgerState
@@ -205,8 +206,8 @@ def evaluate_protective_stop(
     present candle. First trigger wins; iteration stops there.
     """
     _check_fee_verification("sell", snapshot, config)
-    tick = _require_tick(snapshot)
-    step = _require_step(snapshot)
+    _ensure_tick_available(snapshot)
+    step = _resolve_step(snapshot, config)
 
     if stop.qty.value > state.position_qty.value:
         raise InsufficientPositionError(
@@ -264,7 +265,7 @@ def evaluate_protective_stop(
                 base=base_price_d,
                 side="sell",
                 slippage_bps=config.slippage_bps_per_side,
-                tick=tick,
+                tick=_resolve_tick_for_price(snapshot, base_price_d),
             )
             fill_entry = _build_sell_entry(
                 state=state,

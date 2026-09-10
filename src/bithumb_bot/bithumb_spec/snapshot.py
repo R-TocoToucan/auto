@@ -38,6 +38,7 @@ from bithumb_bot.artifact.canonical import (
 )
 from bithumb_bot.artifact.timestamps import utc_now
 from bithumb_bot.bithumb_spec.schemas import OrdersChanceResponse
+from bithumb_bot.bithumb_spec.tick_schedule import tick_schedule_provenance
 from bithumb_bot.config.gate1_model import OptionalStrictDecimal, StrictDecimal
 from bithumb_bot.config.validator import validate
 from bithumb_bot.errors import (
@@ -47,6 +48,7 @@ from bithumb_bot.errors import (
 
 _VerificationStatusValue = Literal[
     "confirmed_read_only",
+    "confirmed_documented",
     "provisional_documented",
     "unresolved_until_M6B",
     "contradicted",
@@ -100,6 +102,12 @@ class SnapshotV1(BaseModel):
     supported_order_types: list[str]
     verification_status: dict[str, _VerificationStatusValue]
     source_fixture_hashes: list[str]
+    #: Provenance of the official KRW price-tick schedule when it was
+    #: attached at snapshot-build time (Batch 1B, ``bithumb_bot.
+    #: bithumb_spec.tick_schedule``). None when the snapshot was built
+    #: before the schedule was documented — the engine falls back to
+    #: ``price_tick_rules["default_tick"]`` in that case.
+    price_tick_schedule_provenance: dict[str, str] | None = None
 
     @field_validator("verification_status")
     @classmethod
@@ -179,10 +187,21 @@ def build_snapshot(
             "market_buy_fee_reservation": "provisional_documented",
             "rounding_rejection_behavior": "unresolved_until_M6B",
             "live_order_acceptance": "unresolved_until_M6B",
+            # Batch 1B: order-type support is documented in the official
+            # order-request docs. `confirmed_documented` is research-
+            # sufficient but NOT a live-authorization guarantee — see
+            # :mod:`bithumb_bot.execution.readiness`.
+            "market_buy_price_support": "confirmed_documented",
+            "market_sell_market_support": "confirmed_documented",
         },
         source_fixture_hashes=[
             sha256_hex(p.read_bytes()) for p in fixture_paths if p.is_file()
         ],
+        # Batch 1B: attach the official price-tick schedule provenance
+        # so the engine's tick resolver can select per-band ticks
+        # (Decimal-native) instead of relying on a single
+        # `default_tick`. Live venue quantity-step remains unresolved.
+        price_tick_schedule_provenance=tick_schedule_provenance(),
     )
 
 

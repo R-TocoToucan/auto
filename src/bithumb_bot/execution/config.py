@@ -47,6 +47,15 @@ class ExecutionConfig:
     slippage_bps_per_side: Decimal
     max_notional_krw: Money
     allow_provisional_fee_model: bool = False
+    #: Research-only accounting quantum for base-asset quantities (Batch
+    #: 1B). When set, :func:`~bithumb_bot.execution.engine.execute_intent`
+    #: floors buy/sell quantities to this quantum instead of the
+    #: snapshot's ``default_step`` — and the residual is retained as
+    #: dust. This is NOT a claim about Bithumb's accepted live order
+    #: step (still unresolved until M6B); for KRW-BTC the caller passes
+    #: ``Decimal("0.00000001")`` (the Bitcoin base accounting unit).
+    #: ``None`` = legacy path: snapshot ``default_step`` is required.
+    simulation_quantity_quantum: Decimal | None = None
 
     def __post_init__(self) -> None:
         if type(self.slippage_bps_per_side) is not Decimal:  # noqa: E721
@@ -64,6 +73,18 @@ class ExecutionConfig:
             raise ValueError(
                 f"max_notional_krw must be > 0, got {self.max_notional_krw.value}"
             )
+        if self.simulation_quantity_quantum is not None:
+            if type(self.simulation_quantity_quantum) is not Decimal:  # noqa: E721
+                raise TypeError(
+                    f"simulation_quantity_quantum must be Decimal, got "
+                    f"{type(self.simulation_quantity_quantum).__name__!r}. "
+                    "Construct with Decimal('0.00000001') — never a float (D-49)."
+                )
+            if self.simulation_quantity_quantum <= 0:
+                raise ValueError(
+                    f"simulation_quantity_quantum must be > 0, got "
+                    f"{self.simulation_quantity_quantum}"
+                )
 
 
 __all__ = ["ExecutionConfig"]

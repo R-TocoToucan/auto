@@ -76,8 +76,9 @@ from bithumb_bot.execution import (
 # ``bithumb_bot.execution.stop`` already imports the same helpers.
 from bithumb_bot.execution.engine import (
     _check_fee_verification,
-    _require_step,
-    _require_tick,
+    _ensure_tick_available,
+    _resolve_step,
+    _resolve_tick_for_price,
     _slippage_and_tick,
 )
 from bithumb_bot.market_data.candles import Candle
@@ -231,7 +232,7 @@ def _hypothetical_liquidation(
     *,
     position_qty: Decimal,
     close_price: Decimal,
-    tick: Decimal,
+    snapshot: SnapshotV1,
     step: Decimal,
     ask_fee: Decimal,
     krw_min_total_ask: Decimal | None,
@@ -260,7 +261,7 @@ def _hypothetical_liquidation(
         base=close_price,
         side="sell",
         slippage_bps=slippage_bps,
-        tick=tick,
+        tick=_resolve_tick_for_price(snapshot, close_price),
     )
     gross = fill_price * filled_qty
     # KRW-vs-KRW dust check: Bithumb's `min_total` on the ask side is
@@ -293,7 +294,7 @@ def _reconstruct_equity_curve(
     entries: tuple[LedgerEntry, ...],
     starting_cash: Money,
     *,
-    tick: Decimal,
+    snapshot: SnapshotV1,
     step: Decimal,
     ask_fee: Decimal,
     krw_min_total_ask: Decimal | None,
@@ -329,7 +330,7 @@ def _reconstruct_equity_curve(
         outcome = _hypothetical_liquidation(
             position_qty=position,
             close_price=close,
-            tick=tick,
+            snapshot=snapshot,
             step=step,
             ask_fee=ask_fee,
             krw_min_total_ask=krw_min_total_ask,
@@ -702,8 +703,8 @@ def evaluate_backtest(
             open_position_qty=backtest_result.final_position_qty,
         )
     try:
-        tick = _require_tick(snapshot)
-        step = _require_step(snapshot)
+        _ensure_tick_available(snapshot)
+        step = _resolve_step(snapshot, backtest_config.execution)
     except SnapshotValidationError as exc:
         return _refused_report(
             source_invalid_reason=source_invalid_reason,
@@ -723,7 +724,7 @@ def evaluate_backtest(
     slippage_bps = backtest_config.execution.slippage_bps_per_side
     max_notional = backtest_config.execution.max_notional_krw.value
     liq_kwargs: dict[str, object] = {
-        "tick": tick,
+        "snapshot": snapshot,
         "step": step,
         "ask_fee": ask_fee,
         "krw_min_total_ask": krw_min_total_ask,
@@ -753,7 +754,7 @@ def evaluate_backtest(
             dataset,
             entries,
             backtest_config.starting_cash_krw,
-            tick=tick,
+            snapshot=snapshot,
             step=step,
             ask_fee=ask_fee,
             krw_min_total_ask=krw_min_total_ask,

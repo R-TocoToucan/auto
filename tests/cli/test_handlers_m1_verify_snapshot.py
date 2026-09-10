@@ -101,13 +101,17 @@ class TestRequireExecutionReadyFlag:
     def test_default_invocation_exits_zero_when_readiness_unresolved(
         self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # The committed fixture yields an unresolved readiness report
-        # (five Batch-1B facts). Default invocation must still exit 0.
+        # Default invocation supplies no research quantum, so
+        # research_simulation_readiness stays unresolved; live surface
+        # is unresolved because M6B facts remain open. Default
+        # invocation must still exit 0 (diagnostic-only).
         snap = _make_valid_snapshot(tmp_path)
         rc = main(["m1", "verify-snapshot", "--snapshot", str(snap)])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "execution_readiness:    unresolved" in out
+        assert "research_simulation_readiness:" in out
+        assert "live_execution_readiness:" in out
+        assert "unresolved" in out
 
     def test_require_flag_exits_nonzero_when_readiness_unresolved(
         self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]

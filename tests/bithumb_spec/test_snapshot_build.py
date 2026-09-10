@@ -55,6 +55,8 @@ class TestBuildSnapshot:
             "market_buy_fee_reservation": "provisional_documented",
             "rounding_rejection_behavior": "unresolved_until_M6B",
             "live_order_acceptance": "unresolved_until_M6B",
+            "market_buy_price_support": "confirmed_documented",
+            "market_sell_market_support": "confirmed_documented",
         }
 
     def test_source_fixture_hashes_computed(

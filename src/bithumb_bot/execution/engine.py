@@ -35,6 +35,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from bithumb_bot.bithumb_spec.snapshot import SnapshotV1
+from bithumb_bot.bithumb_spec.tick_schedule import resolve_krw_tick
 from bithumb_bot.core.money import Money, Qty
 from bithumb_bot.core.rounding import (
     quantize_price_tick_down,
@@ -79,8 +80,8 @@ def execute_intent(
 ) -> tuple[LedgerState, LedgerEntry]:
     """Execute one ``intent`` against ``state``, producing a new state + entry."""
     _check_fee_verification(intent.side, snapshot, config)
-    tick = _require_tick(snapshot)
-    step = _require_step(snapshot)
+    _ensure_tick_available(snapshot)
+    step = _resolve_step(snapshot, config)
 
     fill_candle = _find_fill_candle(dataset, intent.signal_ts_utc)
     if fill_candle is None:
@@ -106,7 +107,7 @@ def execute_intent(
         base=fill_candle.open.value,
         side=intent.side,
         slippage_bps=config.slippage_bps_per_side,
-        tick=tick,
+        tick=_resolve_tick_for_price(snapshot, fill_candle.open.value),
     )
 
     if intent.side == "buy":
@@ -162,6 +163,14 @@ def _check_fee_verification(
 
 
 def _require_tick(snapshot: SnapshotV1) -> Decimal:
+    """Legacy default-tick lookup, retained for callers that pre-date
+    the Batch 1B official schedule (e.g. hand-built engine-test snapshots).
+
+    New code paths call :func:`_resolve_tick_for_price`, which prefers
+    the official price-band schedule stored via
+    ``snapshot.price_tick_schedule_provenance`` and falls back to the
+    single ``default_tick`` when the snapshot pre-dates the schedule.
+    """
     tick = snapshot.price_tick_rules.get(_TICK_KEY)
     if tick is None:
         raise SnapshotValidationError(
@@ -169,6 +178,37 @@ def _require_tick(snapshot: SnapshotV1) -> Decimal:
             "— no verified tick rule for this market; engine refuses."
         )
     return tick
+
+
+def _resolve_tick_for_price(snapshot: SnapshotV1, price: Decimal) -> Decimal:
+    """Return the KRW price tick for ``price``.
+
+    Prefers the official schedule when the snapshot carries schedule
+    provenance (Batch 1B). Falls back to the legacy ``default_tick``
+    key so pre-schedule snapshots (and hand-built engine-test snapshots)
+    still work.
+    """
+    if snapshot.price_tick_schedule_provenance is not None:
+        return resolve_krw_tick(price)
+    return _require_tick(snapshot)
+
+
+def _ensure_tick_available(snapshot: SnapshotV1) -> None:
+    """Fail-closed eager check: reject a snapshot with no tick source.
+
+    A snapshot missing BOTH ``price_tick_schedule_provenance`` and a
+    legacy ``price_tick_rules['default_tick']`` cannot produce a tick
+    for any price. Callers run this up-front so the refusal happens
+    before any fill attempt, matching the pre-Batch-1B contract.
+    """
+    if snapshot.price_tick_schedule_provenance is not None:
+        return
+    if _TICK_KEY in snapshot.price_tick_rules:
+        return
+    raise SnapshotValidationError(
+        f"snapshot has no price-tick source (neither price_tick_schedule_"
+        f"provenance nor price_tick_rules[{_TICK_KEY!r}]) — engine refuses."
+    )
 
 
 def _require_step(snapshot: SnapshotV1) -> Decimal:
@@ -179,6 +219,23 @@ def _require_step(snapshot: SnapshotV1) -> Decimal:
             "— no verified quantity-step rule for this market; engine refuses."
         )
     return step
+
+
+def _resolve_step(snapshot: SnapshotV1, config: ExecutionConfig) -> Decimal:
+    """Return the base-asset quantity step the engine should use.
+
+    Research simulation (Batch 1B): when the caller supplies
+    ``config.simulation_quantity_quantum``, the engine floors quantities
+    to that quantum — a research assumption, NOT a claim about
+    Bithumb's live-accepted quantity step.
+
+    Live path: no quantum → require ``snapshot.default_step``. Bithumb's
+    live order-volume precision remains unresolved until M6B; a snapshot
+    without ``default_step`` and no research quantum is refused.
+    """
+    if config.simulation_quantity_quantum is not None:
+        return config.simulation_quantity_quantum
+    return _require_step(snapshot)
 
 
 def _find_fill_candle(
