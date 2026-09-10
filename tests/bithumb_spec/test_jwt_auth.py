@@ -1,8 +1,8 @@
 """Tests for :mod:`bithumb_bot.bithumb_spec.jwt_auth`.
 
-Covers Finding 6 shape (access_key + nonce + query_hash/SHA-512 +
-optional timestamp) and T-1-04-01 (credential material must never
-appear in an AuthConstructionError message).
+Covers Finding 6 shape (access_key + nonce + timestamp + query_hash/
+SHA-512) and T-1-04-01 (credential material must never appear in an
+AuthConstructionError message).
 
 All test secrets are >=32 bytes to sidestep PyJWT's
 `InsecureKeyLengthWarning` (RFC 7518 §3.2 minimum for HS256).
@@ -11,6 +11,7 @@ All test secrets are >=32 bytes to sidestep PyJWT's
 from __future__ import annotations
 
 import hashlib
+import inspect
 from datetime import UTC, datetime
 from unittest import mock
 
@@ -25,29 +26,78 @@ from bithumb_bot.errors import AuthConstructionError
 # warning into a test failure).
 SK = "sk_test_" + "x" * 32
 
+_FROZEN = datetime(2026, 9, 8, 1, 23, 45, tzinfo=UTC)
+_FROZEN_MS = int(_FROZEN.timestamp() * 1000)
 
-class TestKnownAnswer:
-    def test_minimal_payload_decodes(self) -> None:
+
+class TestAlwaysHasTimestamp:
+    """Requirement: every private-endpoint JWT carries a millisecond
+    integer ``timestamp`` claim. The builder no longer exposes any
+    knob to omit it."""
+
+    def test_no_query_params_still_has_timestamp(self) -> None:
         token = build_jwt(
-            access_key="ak_test",
+            access_key="ak",
             secret_key=SK,
             query_params=None,
-            nonce_fn=lambda: "fixed-nonce",
+            nonce_fn=lambda: "n",
+            now_fn=lambda: _FROZEN,
         )
         decoded = pyjwt.decode(token, SK, algorithms=["HS256"])
-        assert decoded == {"access_key": "ak_test", "nonce": "fixed-nonce"}
+        assert decoded == {
+            "access_key": "ak",
+            "nonce": "n",
+            "timestamp": _FROZEN_MS,
+        }
+        assert isinstance(decoded["timestamp"], int)
 
-    def test_empty_query_dict_treated_as_absent(self) -> None:
-        """D-89 defensive: empty {} MUST NOT trigger query_hash."""
+    def test_empty_query_dict_still_has_timestamp(self) -> None:
+        """D-89 defensive: empty {} MUST NOT trigger query_hash, but
+        timestamp is still required."""
         token = build_jwt(
             access_key="ak",
             secret_key=SK,
             query_params={},
             nonce_fn=lambda: "n",
+            now_fn=lambda: _FROZEN,
         )
         decoded = pyjwt.decode(token, SK, algorithms=["HS256"])
         assert "query_hash" not in decoded
         assert "query_hash_alg" not in decoded
+        assert decoded["timestamp"] == _FROZEN_MS
+
+    def test_builder_has_no_include_timestamp_kwarg(self) -> None:
+        """Production callers MUST NOT be able to omit ``timestamp``:
+        the parameter is gone from the signature entirely."""
+        sig = inspect.signature(build_jwt)
+        assert "include_timestamp" not in sig.parameters
+
+
+class TestOrdersChanceShape:
+    """Regression: GET /v1/orders/chance sends {"market": ...} — the
+    JWT for that call MUST carry the full five-claim shape."""
+
+    def test_five_claims_present(self) -> None:
+        token = build_jwt(
+            access_key="ak_orders_chance",
+            secret_key=SK,
+            query_params={"market": "KRW-BTC"},
+            nonce_fn=lambda: "n_orders_chance",
+            now_fn=lambda: _FROZEN,
+        )
+        decoded = pyjwt.decode(token, SK, algorithms=["HS256"])
+        assert set(decoded.keys()) == {
+            "access_key",
+            "nonce",
+            "timestamp",
+            "query_hash",
+            "query_hash_alg",
+        }
+        assert decoded["access_key"] == "ak_orders_chance"
+        assert decoded["nonce"] == "n_orders_chance"
+        assert decoded["timestamp"] == _FROZEN_MS
+        assert decoded["query_hash_alg"] == "SHA512"
+        assert decoded["query_hash"] == hashlib.sha512(b"market=KRW-BTC").hexdigest()
 
 
 class TestQueryHash:
@@ -83,32 +133,6 @@ class TestQueryHash:
         decoded_a = pyjwt.decode(token_a, SK, algorithms=["HS256"])
         decoded_b = pyjwt.decode(token_b, SK, algorithms=["HS256"])
         assert decoded_a["query_hash"] == decoded_b["query_hash"]
-
-
-class TestIncludeTimestamp:
-    def test_default_excludes_timestamp(self) -> None:
-        token = build_jwt(
-            access_key="ak",
-            secret_key=SK,
-            query_params=None,
-            nonce_fn=lambda: "n",
-        )
-        decoded = pyjwt.decode(token, SK, algorithms=["HS256"])
-        assert "timestamp" not in decoded
-
-    def test_include_timestamp_true_adds_ms_int(self) -> None:
-        frozen = datetime(2026, 9, 8, 1, 23, 45, tzinfo=UTC)
-        token = build_jwt(
-            access_key="ak",
-            secret_key=SK,
-            query_params=None,
-            include_timestamp=True,
-            nonce_fn=lambda: "n",
-            now_fn=lambda: frozen,
-        )
-        decoded = pyjwt.decode(token, SK, algorithms=["HS256"])
-        assert isinstance(decoded["timestamp"], int)
-        assert decoded["timestamp"] == int(frozen.timestamp() * 1000)
 
 
 class TestBearerHeader:
@@ -162,22 +186,3 @@ class TestSecretDiscipline:
         )
         decoded = pyjwt.decode(token, SK, algorithms=["HS256"])
         assert "query_hash" not in decoded
-
-
-class TestDocstringMarker:
-    """The plan requires a `# TODO(M1-verify)` anchor in the docstring."""
-
-    def test_module_docstring_has_open_verification_item_marker(self) -> None:
-        import bithumb_bot.bithumb_spec.jwt_auth as mod
-
-        assert "TODO(M1-verify)" in (mod.__doc__ or "")
-        assert "Open Verification Item #1" in (mod.__doc__ or "")
-
-    def test_build_jwt_body_has_todo_anchor(self) -> None:
-        """The plan says the docstring must anchor Open Verification Item #1;
-        we also check that the function body contains the marker so a
-        code reviewer stumbling into `build_jwt` sees the deferred fact."""
-        import inspect
-
-        src = inspect.getsource(build_jwt)
-        assert "TODO(M1-verify)" in src

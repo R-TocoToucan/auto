@@ -1,22 +1,18 @@
-"""Bithumb JWT builder (Finding 6) — D-70 secret discipline + Open Verification Item #1.
+"""Bithumb JWT builder (Finding 6) — D-70 secret discipline.
 
-Bithumb's authenticated REST endpoints (per current
-``apidocs.bithumb.com``, verified only as a documentation citation in
-Finding 6 — see Open Verification Item #1) accept an ``Authorization:
-Bearer <HS256-JWT>`` header. Claims cited by Finding 6:
+Bithumb's authenticated REST endpoints accept an ``Authorization:
+Bearer <HS256-JWT>`` header. Every private-endpoint JWT this module
+produces carries:
 
 * ``access_key`` — the operator's public key ID.
-* ``nonce``     — unique per request (UUID hex is the docs' example).
-* ``query_hash``      — SHA-512 of the alphabetized URL-encoded query
-  string, when query params are present.
-* ``query_hash_alg``  — the literal ``"SHA512"`` when ``query_hash``
-  is present.
-* ``timestamp`` — a millisecond integer. **Open Verification Item #1**:
-  Finding 6 did NOT confirm this claim is present in the documentation
-  we could cite this pass. The builder therefore accepts an explicit
-  ``include_timestamp: bool`` flag, defaulting to ``False`` (do NOT
-  include). ``bt m1 verify-facts`` refuses to advance while the fact
-  is still unresolved in the ``VERIFICATION.md`` bundle.
+* ``nonce``     — unique per request (UUID4 hex).
+* ``timestamp`` — Unix epoch **milliseconds**, integer. Always present.
+
+When the request has query parameters, the token additionally carries:
+
+* ``query_hash``     — SHA-512 hex of the alphabetized, URL-encoded
+  query string.
+* ``query_hash_alg`` — the literal ``"SHA512"``.
 
 Secret discipline (D-70 / T-1-04-01):
 
@@ -29,10 +25,6 @@ Secret discipline (D-70 / T-1-04-01):
   underlying error text, no credential material.
 * ``bearer_header(token)`` produces the header dict; the plain string
   token is safe to pass through as a full JWT is not the key.
-
-TODO(M1-verify): Open Verification Item #1 — confirm whether
-``timestamp`` is required by ``apidocs.bithumb.com``; if so, flip the
-``include_timestamp`` default here and re-run the fixture-replay tests.
 """
 
 from __future__ import annotations
@@ -75,33 +67,28 @@ def build_jwt(
     secret_key: str,
     query_params: Mapping[str, str] | None,
     *,
-    include_timestamp: bool = False,
     nonce_fn: Callable[[], str] = _default_nonce,
     now_fn: Callable[[], datetime] = _default_now,
 ) -> str:
     """Build an HS256 JWT bearer token for a Bithumb authenticated call.
 
+    The returned token ALWAYS contains ``access_key``, ``nonce`` and a
+    millisecond-integer ``timestamp`` claim. When ``query_params`` is
+    non-empty, ``query_hash`` and ``query_hash_alg="SHA512"`` are also
+    present. An empty dict is treated as absent (D-89 defensive:
+    never hash an empty string).
+
     Args:
-        access_key:        The operator's public access-key ID.
-        secret_key:        The operator's private secret key (HMAC key
-                           material). Passed as a plain ``str`` because
-                           ``jwt.encode`` requires it; ``del``-ed before
-                           this function returns (T-1-04-01).
-        query_params:      Optional URL query mapping. When non-empty,
-                           ``query_hash`` + ``query_hash_alg`` are
-                           added to the payload per Finding 6. An empty
-                           dict is treated as absent (D-89 defensive:
-                           never hash an empty string).
-        include_timestamp: Whether to include a millisecond-integer
-                           ``timestamp`` claim (Open Verification Item
-                           #1). Default ``False`` reflects Finding 6's
-                           citation that no such claim was confirmed by
-                           observation this pass.
-        nonce_fn:          Injectable nonce factory for deterministic
-                           tests. Default is :func:`_default_nonce`.
-        now_fn:            Injectable current-UTC factory for
-                           deterministic tests. Default is
-                           :func:`_default_now`.
+        access_key:   The operator's public access-key ID.
+        secret_key:   The operator's private secret key (HMAC key
+                      material). Passed as a plain ``str`` because
+                      ``jwt.encode`` requires it; ``del``-ed before
+                      this function returns (T-1-04-01).
+        query_params: Optional URL query mapping.
+        nonce_fn:     Injectable nonce factory for deterministic tests.
+                      Default is :func:`_default_nonce`.
+        now_fn:       Injectable current-UTC factory for deterministic
+                      tests. Default is :func:`_default_now`.
 
     Returns:
         A signed JWT string suitable for the ``Authorization: Bearer``
@@ -113,18 +100,15 @@ def build_jwt(
             to ``"see structured logs"`` — no credential material is
             spliced in.
     """
-    # TODO(M1-verify): Open Verification Item #1 — confirm the
-    # `timestamp` claim shape at M1 build time. See VERIFICATION.md.
     try:
         payload: dict[str, Any] = {
             "access_key": access_key,
             "nonce": nonce_fn(),
+            "timestamp": int(now_fn().timestamp() * 1000),
         }
         if query_params:  # empty dict OR None -> skip (D-89 defensive)
             payload["query_hash"] = _compute_query_hash(query_params)
             payload["query_hash_alg"] = "SHA512"
-        if include_timestamp:
-            payload["timestamp"] = int(now_fn().timestamp() * 1000)
         token = jwt.encode(payload, secret_key, algorithm="HS256")
         # PyJWT ≥2.0 returns str; older versions returned bytes.
         if isinstance(token, bytes):  # pragma: no cover — defensive

@@ -147,13 +147,13 @@ async def fetch_spec(
     secret_str = settings.account_read_secret_key.get_secret_value()
 
     try:
-        # 3. Build JWT (Open Verification Item #1 default: no timestamp).
+        # 3. Build JWT — always includes access_key, nonce, timestamp;
+        #    query_hash/query_hash_alg added because query_params is set.
         query_params = {"market": market}
         token = build_jwt(
             access_key=access_key,
             secret_key=secret_str,
             query_params=query_params,
-            include_timestamp=False,
         )
 
         # 4. Open the client with D-40 timeouts.
