@@ -119,6 +119,12 @@ HANDLER_MAP: dict[tuple[str, str], HandlerFn] = {
     ("m1", "verify-snapshot"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.m1_verify_snapshot", "handler"
     ),
+    ("research", "collect-candles"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.research_collect_candles", "handler"
+    ),
+    ("research", "backtest"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.research_backtest", "handler"
+    ),
     # ---- D-87 reserved verbs — every entry bound to reserved_handler ------
     ("m2", "collect-observations"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.reserved", "reserved_handler"
@@ -267,6 +273,58 @@ def _build_parser() -> argparse.ArgumentParser:
             "readiness diagnostically (exits 0 even when unresolved)."
         ),
     )
+
+    # -- research verb -----------------------------------------------------
+    p_research = verbs.add_parser(
+        "research",
+        help=(
+            "Research MVP surface — public candle collection + offline "
+            "backtest + evaluation. No credentials, no live orders."
+        ),
+    )
+    p_research_sub = p_research.add_subparsers(
+        dest="subverb", metavar="<subverb>", title="research verbs"
+    )
+    p_research_collect = p_research_sub.add_parser(
+        "collect-candles",
+        help=(
+            "Fetch public candles via Bithumb REST and write a "
+            "canonical CandleDataset + SHA-256 sidecar."
+        ),
+    )
+    p_research_collect.add_argument("--market", required=True)
+    p_research_collect.add_argument(
+        "--unit-minutes",
+        required=True,
+        type=int,
+        help="Candle unit in minutes (240 for the v1 strategy).",
+    )
+    p_research_collect.add_argument(
+        "--start-utc",
+        required=True,
+        help="ISO-8601 UTC start (inclusive, on a unit-minute boundary).",
+    )
+    p_research_collect.add_argument(
+        "--end-utc",
+        required=True,
+        help="ISO-8601 UTC end (exclusive, on a unit-minute boundary).",
+    )
+    p_research_collect.add_argument(
+        "--out",
+        required=True,
+        help="Output path for the CandleDataset JSON (sidecar written next to it).",
+    )
+    p_research_backtest = p_research_sub.add_parser(
+        "backtest",
+        help=(
+            "Run the chronological backtest + performance evaluation "
+            "and persist a canonical JSON report + SHA-256 sidecar."
+        ),
+    )
+    p_research_backtest.add_argument("--dataset", required=True)
+    p_research_backtest.add_argument("--snapshot", required=True)
+    p_research_backtest.add_argument("--config", required=True)
+    p_research_backtest.add_argument("--out", required=True)
 
     # -- D-87 reserved verbs (added by plan 01-03-08) ---------------------
     # Every reserved subparser is labelled `RESERVED — future phase, not

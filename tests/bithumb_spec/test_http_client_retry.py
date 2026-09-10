@@ -299,3 +299,108 @@ class TestBucketAcquireBeforeEveryAttempt:
 
         asyncio.run(_go())
         assert acquire_count[0] == 3
+
+
+class TestBoundedRetryAfter:
+    """Negative or excessive Retry-After values must not stall or crash."""
+
+    def _run_with_header(
+        self,
+        fake_monotonic_clock: FakeMonotonicClock,
+        header_value: str,
+        *,
+        backoff_cap_ms: int = 5000,
+    ) -> list[float]:
+        call_count = [0]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            call_count[0] += 1
+            if call_count[0] < 2:
+                return httpx.Response(
+                    429, headers={"Retry-After": header_value}, json={"e": 1}
+                )
+            return httpx.Response(200, json={"ok": True})
+
+        transport = httpx.MockTransport(handler)
+        client = create_client(
+            base_url="https://x",
+            connect_timeout_s=1.0,
+            read_timeout_s=1.0,
+            transport=transport,
+        )
+        bucket = _make_bucket(fake_monotonic_clock)
+        sleep = _sleep_mock()
+
+        async def _go() -> Any:
+            async with client as c:
+                return await request_with_retry(
+                    c,
+                    "GET",
+                    "/x",
+                    max_attempts=3,
+                    backoff_initial_ms=500,
+                    backoff_cap_ms=backoff_cap_ms,
+                    bucket=bucket,
+                    sleep_fn=sleep,
+                )
+
+        response = asyncio.run(_go())
+        assert response.status_code == 200
+        return [
+            call.args[0]
+            for call in sleep.await_args_list
+            if call.args and call.args[0] > 0
+        ]
+
+    def test_negative_retry_after_clamped_to_zero(
+        self, fake_monotonic_clock: FakeMonotonicClock
+    ) -> None:
+        sleeps = self._run_with_header(fake_monotonic_clock, "-30")
+        # No positive sleep observed for the negative Retry-After
+        # (clamped to 0.0); bucket.acquire may add a small wait, but
+        # the retry-after itself never contributes.
+        assert all(s < 1.0 for s in sleeps), sleeps
+
+    def test_excessive_retry_after_clamped_to_backoff_cap(
+        self, fake_monotonic_clock: FakeMonotonicClock
+    ) -> None:
+        # Header requests 999,999 seconds; cap is 5s. Expect exactly one
+        # 5-second sleep (the clamped value), not 999,999.
+        sleeps = self._run_with_header(
+            fake_monotonic_clock, "999999", backoff_cap_ms=5000
+        )
+        assert 5.0 in sleeps, sleeps
+        assert max(sleeps) == 5.0, sleeps
+
+
+class TestTrustEnvDisabled:
+    """`create_client` MUST set `trust_env=False`: ambient HTTP_PROXY /
+    HTTPS_PROXY / NO_PROXY variables must not silently reroute exchange
+    traffic through an unauthorized proxy.
+    """
+
+    def test_trust_env_false(self) -> None:
+        client = create_client(
+            base_url="https://api.bithumb.com",
+            connect_timeout_s=5.0,
+            read_timeout_s=15.0,
+        )
+        try:
+            assert client._trust_env is False
+        finally:
+            asyncio.run(client.aclose())
+
+    def test_ambient_proxy_env_ignored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HTTP_PROXY", "http://malicious.example:9999")
+        monkeypatch.setenv("HTTPS_PROXY", "http://malicious.example:9999")
+        client = create_client(
+            base_url="https://api.bithumb.com",
+            connect_timeout_s=5.0,
+            read_timeout_s=15.0,
+        )
+        try:
+            assert client._trust_env is False
+        finally:
+            asyncio.run(client.aclose())

@@ -82,6 +82,26 @@ PHASE1_ROWS: dict[tuple[str, str], CapabilityRequirements] = {
         trade_cred_prohibited=True,
         human_auth=HumanAuthRequirement.NONE,
     ),
+    ("research", "collect-candles"): CapabilityRequirements(
+        gate1=True,
+        gate2=False,
+        gate3=False,
+        snapshot=SnapshotRequirement.NONE,
+        cap=CapRequirement.NOT_REQUIRED,
+        cred=CredRequirement.NONE,
+        trade_cred_prohibited=True,
+        human_auth=HumanAuthRequirement.INVOCATION_ONLY,
+    ),
+    ("research", "backtest"): CapabilityRequirements(
+        gate1=True,
+        gate2=False,
+        gate3=False,
+        snapshot=SnapshotRequirement.EVIDENCE_INPUT,
+        cap=CapRequirement.NOT_REQUIRED,
+        cred=CredRequirement.NONE,
+        trade_cred_prohibited=True,
+        human_auth=HumanAuthRequirement.NONE,
+    ),
 }
 
 # ---------------------------------------------------------------------------

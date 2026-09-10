@@ -80,23 +80,42 @@ def create_client(
         write=read_timeout_s,
         pool=read_timeout_s,
     )
-    return httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=transport)
+    # trust_env=False: never silently inherit ambient proxy env vars
+    # (HTTP_PROXY / HTTPS_PROXY / etc.). Exchange traffic must not route
+    # through a shell-configured proxy the operator did not authorize.
+    return httpx.AsyncClient(
+        base_url=base_url,
+        timeout=timeout,
+        transport=transport,
+        trust_env=False,
+    )
 
 
-def _parse_retry_after(response: httpx.Response) -> float | None:
-    """Return the ``Retry-After`` header as float seconds, or ``None``.
+def _parse_retry_after(
+    response: httpx.Response, *, max_seconds: float
+) -> float | None:
+    """Return the ``Retry-After`` header as bounded float seconds.
 
     Bithumb (per docs) uses integer seconds. HTTP allows a date form
     too — we accept ONLY the integer-seconds form; a date-form
-    ``Retry-After`` falls back to the standard backoff path.
+    ``Retry-After`` returns ``None`` (caller falls back to backoff).
+
+    The value is clamped to ``[0.0, max_seconds]``: a negative header
+    cannot cause a failure, and an excessive header cannot cause
+    indefinite delay. A malformed / missing header returns ``None``.
     """
     value = response.headers.get("Retry-After")
     if value is None:
         return None
     try:
-        return float(int(value.strip()))
+        parsed = float(int(value.strip()))
     except (ValueError, AttributeError):
         return None
+    if parsed < 0:
+        return 0.0
+    if parsed > max_seconds:
+        return max_seconds
+    return parsed
 
 
 def _backoff_delay_seconds(
@@ -198,7 +217,11 @@ async def request_with_retry(
         # Retryable status.
         if attempt >= max_attempts:
             return response
-        retry_after = _parse_retry_after(response)
+        # Bound Retry-After to the same cap window as the backoff loop
+        # so a hostile / malformed header cannot cause indefinite delay.
+        retry_after = _parse_retry_after(
+            response, max_seconds=backoff_cap_ms / 1000.0
+        )
         if retry_after is not None:
             await sleep_fn(retry_after)
         else:

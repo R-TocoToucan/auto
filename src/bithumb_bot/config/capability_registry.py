@@ -197,6 +197,30 @@ _PHASE1: dict[tuple[str, str], CapabilityRequirements] = {
         trade_cred_prohibited=True,
         human_auth=HumanAuthRequirement.NONE,
     ),
+    # research collect-candles — public REST candle collection, no
+    # credentials, invocation-scoped human authorization.
+    ("research", "collect-candles"): CapabilityRequirements(
+        gate1=True,
+        gate2=False,
+        gate3=False,
+        snapshot=SnapshotRequirement.NONE,
+        cap=CapRequirement.NOT_REQUIRED,
+        cred=CredRequirement.NONE,
+        trade_cred_prohibited=True,
+        human_auth=HumanAuthRequirement.INVOCATION_ONLY,
+    ),
+    # research backtest — offline; snapshot is EVIDENCE input for the
+    # backtest+evaluation pipeline. No live-broker path.
+    ("research", "backtest"): CapabilityRequirements(
+        gate1=True,
+        gate2=False,
+        gate3=False,
+        snapshot=SnapshotRequirement.EVIDENCE_INPUT,
+        cap=CapRequirement.NOT_REQUIRED,
+        cred=CredRequirement.NONE,
+        trade_cred_prohibited=True,
+        human_auth=HumanAuthRequirement.NONE,
+    ),
 }
 
 
