@@ -175,3 +175,38 @@ class TestIntegrityAndGuards:
         write_dataset_with_sidecar(d, target)
         with pytest.raises(SnapshotAlreadyConsumedError):
             write_dataset_with_sidecar(d, target)
+
+
+class TestExactDecimalRoundTrip:
+    def test_21_digit_decimal_ohlc_preserved(self, tmp_path: Path) -> None:
+        # Bithumb candle OHLC/volume must retain full Decimal precision
+        # across canonical-JSON serialization and reload — more digits
+        # than a float64 can represent, exact on both sides.
+        precise = "12345.678901234567890123"  # 21 significant digits
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        candle = Candle(
+            market="KRW-BTC",
+            unit_minutes=UNIT,
+            open_time_utc=start,
+            open=precise,
+            high=precise,
+            low=precise,
+            close=precise,
+            volume=precise,
+            quote_volume=precise,
+        )
+        d = _sample_dataset([candle])
+        target = tmp_path / "dataset.json"
+        write_dataset_with_sidecar(d, target)
+
+        # Reload and assert every decimal field is exact.
+        loaded = load_dataset(target)
+        [loaded_candle] = loaded.candles
+        for field in ("open", "high", "low", "close"):
+            assert getattr(loaded_candle, field).value == Decimal(precise)
+        assert loaded_candle.volume.value == Decimal(precise)
+        assert loaded_candle.quote_volume.value == Decimal(precise)
+
+        # Byte-exact reserialization proves nothing rounded through
+        # any intermediate float form.
+        assert serialize_dataset(loaded) == target.read_bytes()

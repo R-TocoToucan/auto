@@ -342,13 +342,6 @@ def _build_sell_entry(
             f"requested_qty={requested_qty_d}, step={step}"
         )
 
-    min_ask = snapshot.minimums.krw_min_total_ask
-    if min_ask is not None and filled_qty_d < min_ask:
-        raise BelowMinimumOrderError(
-            f"sell filled_qty={filled_qty_d} < "
-            f"snapshot.minimums.krw_min_total_ask={min_ask}"
-        )
-
     if filled_qty_d > state.position_qty.value:
         raise InsufficientPositionError(
             f"sell filled_qty={filled_qty_d} > "
@@ -358,6 +351,18 @@ def _build_sell_entry(
     gross_d = fill_price_d * filled_qty_d
     fee_d = gross_d * snapshot.fee_rates.ask
     net_proceeds_d = gross_d - fee_d
+
+    # KRW-vs-KRW min-order check: Bithumb's `min_total` on the ask
+    # side is a KRW-denominated minimum notional, not a coin quantity.
+    # Compare gross_proceeds_krw (KRW) against krw_min_total_ask (KRW).
+    # Uses the same step-floored qty and the same conservative sell
+    # fill_price, so execution and evaluation cannot diverge.
+    min_ask = snapshot.minimums.krw_min_total_ask
+    if min_ask is not None and gross_d < min_ask:
+        raise BelowMinimumOrderError(
+            f"sell gross_proceeds_krw={gross_d} < "
+            f"snapshot.minimums.krw_min_total_ask={min_ask}"
+        )
 
     if gross_d > config.max_notional_krw.value:
         raise NotionalCapExceededError(

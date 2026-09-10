@@ -120,7 +120,10 @@ def _snapshot(
         retrieved_at_utc="2026-09-09T00:00:00Z",
         source_endpoints=["/v1/orders/chance"],
         fee_rates=FeeRates(bid="0.0025", ask="0.0025"),
-        minimums=Minimums(krw_min_total_bid="5000", krw_min_total_ask="0.001"),
+        # Both minimums are KRW-denominated notionals; see
+        # bithumb_bot.evaluation.report._hypothetical_liquidation for
+        # the KRW-vs-KRW dust check.
+        minimums=Minimums(krw_min_total_bid="5000", krw_min_total_ask="5000"),
         price_tick_rules=({"default_tick": Decimal("1")} if tick_present else {}),
         quantity_step_rules={"default_step": Decimal("0.001")},
         supported_order_types=["price", "market", "limit"],

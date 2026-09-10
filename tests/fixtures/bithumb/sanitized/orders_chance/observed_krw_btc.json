@@ -1,0 +1,19 @@
+{
+  "ask_fee": "0.0025",
+  "bid_fee": "0.0025",
+  "maker_ask_fee": "0.0025",
+  "maker_bid_fee": "0.0025",
+  "market": {
+    "ask": {
+      "currency": "BTC",
+      "min_total": "5000"
+    },
+    "bid": {
+      "currency": "KRW",
+      "min_total": "5000"
+    },
+    "max_total": "1000000000",
+    "name": "KRW-BTC",
+    "order_types": ["limit"]
+  }
+}

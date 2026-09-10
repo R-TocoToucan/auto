@@ -12,7 +12,7 @@ Baseline cost model (matches ``tests/execution/test_engine.py``):
   tick     = 1000 KRW
   step     = 0.001 BTC
   bid_fee  = ask_fee = 0.0025
-  min_bid  = 5000 KRW; min_ask = 0.001 BTC
+  min_bid  = 5000 KRW; min_ask = 5000 KRW  (both are KRW-denominated notionals)
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ def _snapshot(
         retrieved_at_utc="2026-09-09T00:00:00Z",
         source_endpoints=["/v1/orders/chance"],
         fee_rates=FeeRates(bid="0.0025", ask="0.0025"),
-        minimums=Minimums(krw_min_total_bid="5000", krw_min_total_ask="0.001"),
+        minimums=Minimums(krw_min_total_bid="5000", krw_min_total_ask="5000"),
         # Tick = 1 KRW so low-price test fixtures (100, 101, …) don't get
         # snapped to a next-1000-tick multiple that would wildly distort
         # the 10% protective-stop hand math. Real Bithumb ticks vary by

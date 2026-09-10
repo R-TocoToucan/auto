@@ -252,8 +252,8 @@ def _hypothetical_liquidation(
         return _LiquidationOutcome(_ZERO, _ZERO, _ZERO)
 
     filled_qty = quantize_volume_down(position_qty, step)
-    if krw_min_total_ask is not None and filled_qty < krw_min_total_ask:
-        # Whole position is dust — do not pretend it was sold.
+    if filled_qty <= 0:
+        # Below the venue's step; not sellable as anything.
         return _LiquidationOutcome(_ZERO, _ZERO, position_qty)
 
     fill_price = _slippage_and_tick(
@@ -263,6 +263,14 @@ def _hypothetical_liquidation(
         tick=tick,
     )
     gross = fill_price * filled_qty
+    # KRW-vs-KRW dust check: Bithumb's `min_total` on the ask side is
+    # KRW-denominated, not a coin quantity. Compare the hypothetical
+    # gross_proceeds_krw against krw_min_total_ask so this decision
+    # matches the execution engine's `_build_sell_entry` decision on
+    # the same inputs.
+    if krw_min_total_ask is not None and gross < krw_min_total_ask:
+        return _LiquidationOutcome(_ZERO, _ZERO, position_qty)
+
     if gross > max_notional_krw:
         raise NotionalCapExceededError(
             f"hypothetical liquidation gross={gross} exceeds "

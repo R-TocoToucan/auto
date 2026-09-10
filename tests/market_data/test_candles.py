@@ -16,6 +16,7 @@ from typing import Any, Callable
 import httpx
 import pytest
 
+from bithumb_bot.core.money import Money, Qty
 from bithumb_bot.errors import (
     CandleValidationError,
     PublicRestNotVerifiedError,
@@ -465,7 +466,238 @@ class TestCandleModelTypes:
             [_row(t)], market="KRW-BTC", unit_minutes=UNIT
         )
         # Money and Qty wrappers preserve their type-tagged identity.
-        from bithumb_bot.core.money import Money, Qty
-
         assert isinstance(candle.open, Money)
         assert isinstance(candle.volume, Qty)
+
+
+# ---------------------------------------------------------------------------
+# Real Bithumb JSON numeric shapes — integer OHLC, decimal volumes, mixed
+# ---------------------------------------------------------------------------
+#
+# Bithumb's `/v1/candles/minutes/{unit}` response commonly serialises OHLC
+# prices as UNQUOTED JSON INTEGERS (e.g. `"opening_price": 150000000`) and
+# volumes as UNQUOTED JSON DECIMAL NUMBERS (e.g.
+# `"candle_acc_trade_volume": 0.123`). These tests build response bodies as
+# literal JSON text (NOT via `json.dumps(..., default=str)` which would
+# quote every value and recreate the original bad fixture that hid this
+# defect), and exercise the fetch path with `httpx.MockTransport` so the
+# response bytes go through the real `json.loads(text, parse_float=Decimal)`
+# code path.
+
+
+def _int_ohlc_response_bytes(open_time_utc: datetime) -> bytes:
+    """Real-shape Bithumb page: 1 row with INT OHLC + DECIMAL volume."""
+    naive_utc = open_time_utc.replace(tzinfo=None).isoformat(timespec="seconds")
+    kst_naive = (open_time_utc + timedelta(hours=9)).replace(
+        tzinfo=None
+    ).isoformat(timespec="seconds")
+    ts_ms = int(open_time_utc.timestamp() * 1000)
+    text = (
+        "["
+        "{"
+        '"market":"KRW-BTC",'
+        f'"candle_date_time_utc":"{naive_utc}",'
+        f'"candle_date_time_kst":"{kst_naive}",'
+        '"opening_price":150000000,'
+        '"high_price":150000005,'
+        '"low_price":149999995,'
+        '"trade_price":150000001,'
+        f'"timestamp":{ts_ms},'
+        '"candle_acc_trade_price":150000001.5,'
+        '"candle_acc_trade_volume":0.0000001,'
+        f'"unit":{UNIT}'
+        "}"
+        "]"
+    )
+    return text.encode("utf-8")
+
+
+def _mixed_ohlc_response_bytes(open_time_utc: datetime) -> bytes:
+    """Real-shape Bithumb page: INT prices + DECIMAL volumes, precise."""
+    naive_utc = open_time_utc.replace(tzinfo=None).isoformat(timespec="seconds")
+    kst_naive = (open_time_utc + timedelta(hours=9)).replace(
+        tzinfo=None
+    ).isoformat(timespec="seconds")
+    ts_ms = int(open_time_utc.timestamp() * 1000)
+    text = (
+        "["
+        "{"
+        '"market":"KRW-BTC",'
+        f'"candle_date_time_utc":"{naive_utc}",'
+        f'"candle_date_time_kst":"{kst_naive}",'
+        '"opening_price":150000000,'
+        '"high_price":150000005,'
+        '"low_price":149999995,'
+        '"trade_price":150000001,'
+        f'"timestamp":{ts_ms},'
+        '"candle_acc_trade_price":1234567.89012345,'
+        '"candle_acc_trade_volume":0.00821234,'
+        f'"unit":{UNIT}'
+        "}"
+        "]"
+    )
+    return text.encode("utf-8")
+
+
+def _bool_ohlc_response_bytes(open_time_utc: datetime) -> bytes:
+    """Malformed page: OHLC price is JSON `true` (hostile / buggy source)."""
+    naive_utc = open_time_utc.replace(tzinfo=None).isoformat(timespec="seconds")
+    kst_naive = (open_time_utc + timedelta(hours=9)).replace(
+        tzinfo=None
+    ).isoformat(timespec="seconds")
+    ts_ms = int(open_time_utc.timestamp() * 1000)
+    text = (
+        "["
+        "{"
+        '"market":"KRW-BTC",'
+        f'"candle_date_time_utc":"{naive_utc}",'
+        f'"candle_date_time_kst":"{kst_naive}",'
+        '"opening_price":true,'
+        '"high_price":150000005,'
+        '"low_price":149999995,'
+        '"trade_price":150000001,'
+        f'"timestamp":{ts_ms},'
+        '"candle_acc_trade_price":150000001,'
+        '"candle_acc_trade_volume":1,'
+        f'"unit":{UNIT}'
+        "}"
+        "]"
+    )
+    return text.encode("utf-8")
+
+
+def _real_bytes_transport(payload: bytes) -> httpx.MockTransport:
+    """MockTransport that serves ``payload`` verbatim for any candles request."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.startswith("/v1/candles/minutes/")
+        return httpx.Response(
+            200,
+            content=payload,
+            headers={"content-type": "application/json"},
+        )
+
+    return httpx.MockTransport(_handler)
+
+
+class TestRealJsonNumericShapes:
+    def test_integer_ohlc_json_loads(self) -> None:
+        # ONE 4h candle, INT prices, decimal volume. Assert exact Decimal.
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
+        payload = _int_ohlc_response_bytes(start)
+        result = asyncio.run(
+            fetch_candles(
+                "KRW-BTC",
+                unit_minutes=UNIT,
+                start_utc=start,
+                end_utc=end,
+                bucket=_fast_bucket(),
+                transport=_real_bytes_transport(payload),
+                now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+            )
+        )
+        [candle] = result.candles
+        assert candle.open.value == Decimal("150000000")
+        assert candle.high.value == Decimal("150000005")
+        assert candle.low.value == Decimal("149999995")
+        assert candle.close.value == Decimal("150000001")
+        assert candle.volume.value == Decimal("0.0000001")
+
+    def test_mixed_int_prices_decimal_volumes(self) -> None:
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
+        payload = _mixed_ohlc_response_bytes(start)
+        result = asyncio.run(
+            fetch_candles(
+                "KRW-BTC",
+                unit_minutes=UNIT,
+                start_utc=start,
+                end_utc=end,
+                bucket=_fast_bucket(),
+                transport=_real_bytes_transport(payload),
+                now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+            )
+        )
+        [candle] = result.candles
+        # Prices arrived as JSON ints → exact int Decimals.
+        assert candle.open.value == Decimal("150000000")
+        assert candle.close.value == Decimal("150000001")
+        # Volume arrived as JSON decimal → parsed via parse_float=Decimal
+        # so no float ever appeared in the chain.
+        assert candle.volume.value == Decimal("0.00821234")
+        assert candle.quote_volume.value == Decimal("1234567.89012345")
+
+    def test_boolean_numeric_value_fails(self) -> None:
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
+        payload = _bool_ohlc_response_bytes(start)
+        with pytest.raises(Exception, match="bool|Money"):
+            asyncio.run(
+                fetch_candles(
+                    "KRW-BTC",
+                    unit_minutes=UNIT,
+                    start_utc=start,
+                    end_utc=end,
+                    bucket=_fast_bucket(),
+                    transport=_real_bytes_transport(payload),
+                    now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+                )
+            )
+
+    def test_direct_float_construction_still_fails(self) -> None:
+        # Wrapper-level D-49 rule: Money/Qty do not accept a float
+        # positional argument. This test is independent of the fetch
+        # path — it protects the class-level invariant so a future
+        # refactor of the adapters cannot silently open the door to
+        # float construction.
+        with pytest.raises(TypeError):
+            Money(0.1)  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            Qty(0.1)  # type: ignore[arg-type]
+
+    def test_21_digit_decimal_string_preserved_end_to_end(self) -> None:
+        # More digits than a float64 can represent, arriving as a
+        # QUOTED JSON string. `parse_float=Decimal` isn't invoked for
+        # strings — the adapter's `_money_from_input(str)` path is.
+        # Exact Decimal must land on the Candle.
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
+        precise = "12345.678901234567890123"  # 21 significant digits total
+        naive_utc = start.replace(tzinfo=None).isoformat(timespec="seconds")
+        kst_naive = (start + timedelta(hours=9)).replace(
+            tzinfo=None
+        ).isoformat(timespec="seconds")
+        ts_ms = int(start.timestamp() * 1000)
+        text = (
+            "["
+            "{"
+            '"market":"KRW-BTC",'
+            f'"candle_date_time_utc":"{naive_utc}",'
+            f'"candle_date_time_kst":"{kst_naive}",'
+            f'"opening_price":"{precise}",'
+            f'"high_price":"{precise}",'
+            f'"low_price":"{precise}",'
+            f'"trade_price":"{precise}",'
+            f'"timestamp":{ts_ms},'
+            f'"candle_acc_trade_price":"{precise}",'
+            f'"candle_acc_trade_volume":"{precise}",'
+            f'"unit":{UNIT}'
+            "}"
+            "]"
+        )
+        payload = text.encode("utf-8")
+        result = asyncio.run(
+            fetch_candles(
+                "KRW-BTC",
+                unit_minutes=UNIT,
+                start_utc=start,
+                end_utc=end,
+                bucket=_fast_bucket(),
+                transport=_real_bytes_transport(payload),
+                now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+            )
+        )
+        [candle] = result.candles
+        assert candle.open.value == Decimal(precise)
+        assert candle.volume.value == Decimal(precise)

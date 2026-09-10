@@ -141,7 +141,12 @@ def _snapshot(
         retrieved_at_utc="2026-09-09T00:00:00Z",
         source_endpoints=["/v1/orders/chance"],
         fee_rates=FeeRates(bid="0.0025", ask="0.0025"),
-        minimums=Minimums(krw_min_total_bid="5000", krw_min_total_ask="0.001"),
+        # Both minimums are KRW-denominated notionals. Bithumb's
+        # `min_total` on the ask side is a KRW minimum notional (not a
+        # coin quantity); the engine compares gross_proceeds_krw
+        # against it — see the KRW-vs-KRW fix in
+        # bithumb_bot.execution.engine._build_sell_entry.
+        minimums=Minimums(krw_min_total_bid="5000", krw_min_total_ask="5000"),
         price_tick_rules=price_tick_rules,
         quantity_step_rules=quantity_step_rules,
         supported_order_types=["price", "market", "limit"],

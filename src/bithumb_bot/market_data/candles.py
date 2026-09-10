@@ -84,8 +84,20 @@ def _money_from_input(value: object) -> Money:
         return Money(value)
     if isinstance(value, str):
         return Money.from_str(value)
+    # JSON integer literals arrive here as `int`. Bithumb's candle
+    # endpoint routinely returns OHLC prices as unquoted integers (e.g.
+    # `"opening_price": 150000000`). Convert exactly via Decimal(int) —
+    # no float ever appears in the chain. `bool` is an `int` subclass
+    # in Python; reject it explicitly so a stray JSON `true`/`false`
+    # cannot silently masquerade as 1/0.
+    if isinstance(value, bool):
+        raise ValueError(
+            f"Money field rejects bool; got {value!r}"
+        )
+    if isinstance(value, int):
+        return Money(Decimal(value))
     raise ValueError(
-        f"Money field must be str/Decimal/Money, got {type(value).__name__!r}"
+        f"Money field must be str/int/Decimal/Money, got {type(value).__name__!r}"
     )
 
 
@@ -96,8 +108,14 @@ def _qty_from_input(value: object) -> Qty:
         return Qty(value)
     if isinstance(value, str):
         return Qty.from_str(value)
+    if isinstance(value, bool):
+        raise ValueError(
+            f"Qty field rejects bool; got {value!r}"
+        )
+    if isinstance(value, int):
+        return Qty(Decimal(value))
     raise ValueError(
-        f"Qty field must be str/Decimal/Qty, got {type(value).__name__!r}"
+        f"Qty field must be str/int/Decimal/Qty, got {type(value).__name__!r}"
     )
 
 

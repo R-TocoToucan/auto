@@ -8,7 +8,11 @@ Every value below is hand-verifiable:
 * step                    = 0.001 BTC
 * bid_fee / ask_fee       = 0.0025
 * min_total_bid           = 5000 KRW
-* min_total_ask           = 0.001 BTC
+* min_total_ask           = 5000 KRW  (Bithumb's `min_total` on the ask side
+                                        is a KRW-denominated notional, not a
+                                        coin quantity — the engine compares
+                                        gross_proceeds_krw against it, KRW
+                                        vs KRW)
 * config.max_notional_krw = 100_000_000 KRW (unless a test overrides it)
 
 Buy math (unless a test overrides):
@@ -110,7 +114,7 @@ def _snapshot(
     tick: str | None = "1000",
     step: str | None = "0.001",
     min_bid: str | None = "5000",
-    min_ask: str | None = "0.001",
+    min_ask: str | None = "5000",
 ) -> SnapshotV1:
     price_tick_rules: dict[str, Decimal] = {}
     if tick is not None:
@@ -483,6 +487,8 @@ class TestSellPath:
             )
 
     def test_below_min_ask_fails(self) -> None:
+        # Zero-after-step-floor path — orthogonal to the min-ask KRW
+        # check, exercised BEFORE the min-ask check by construction.
         candle_t = _candle(T0)
         candle_t1 = _candle(T0 + timedelta(minutes=UNIT))
         intent = OrderIntent.sell_from_signal(candle_t, Qty(Decimal("0.0005")))
@@ -490,7 +496,6 @@ class TestSellPath:
             cash_krw=Money(Decimal("0")), position_qty=Qty(Decimal("0.001"))
         )
         # filled_qty = floor(0.0005, 0.001) = 0 → BelowMinimumOrderError
-        # (zero-after-floor path)
         with pytest.raises(BelowMinimumOrderError):
             execute_intent(
                 state, intent, _dataset([candle_t, candle_t1]),
@@ -498,19 +503,77 @@ class TestSellPath:
             )
 
     def test_below_min_ask_via_min_check(self) -> None:
+        # KRW-vs-KRW min-notional check.
+        # fill_price = 99_500_000; step = 1e-6; min_ask = 5000 KRW.
+        # Request qty = 5e-5 BTC → filled = 5e-5 → gross =
+        #   99_500_000 * 0.00005 = 4975 KRW < 5000 → refuse.
         candle_t = _candle(T0)
         candle_t1 = _candle(T0 + timedelta(minutes=UNIT))
-        # step=0.0001, min_ask=0.001; request 0.0005 → filled=0.0005 < min.
-        snap = _snapshot(step="0.0001", min_ask="0.001")
-        intent = OrderIntent.sell_from_signal(candle_t, Qty(Decimal("0.0005")))
+        snap = _snapshot(step="0.000001", min_ask="5000")
+        intent = OrderIntent.sell_from_signal(candle_t, Qty(Decimal("0.00005")))
         state = LedgerState(
             cash_krw=Money(Decimal("0")), position_qty=Qty(Decimal("0.001"))
         )
-        with pytest.raises(BelowMinimumOrderError):
+        with pytest.raises(BelowMinimumOrderError, match="gross_proceeds_krw"):
             execute_intent(
                 state, intent, _dataset([candle_t, candle_t1]),
                 snap, _config(),
             )
+
+    def test_valid_btc_sale_passes_krw_min(self) -> None:
+        # Regression: a valid 0.001 BTC sale worth ~99,500 KRW must
+        # NOT be refused against a 5000 KRW min. Under the old
+        # BTC-vs-KRW bug: 0.001 < 5000 → refused. Under the corrected
+        # KRW-vs-KRW rule: gross 99,500 KRW > 5000 KRW → pass.
+        candle_t = _candle(T0)
+        candle_t1 = _candle(T0 + timedelta(minutes=UNIT))
+        intent = OrderIntent.sell_from_signal(candle_t, Qty(Decimal("0.001")))
+        state = LedgerState(
+            cash_krw=Money(Decimal("0")), position_qty=Qty(Decimal("0.001"))
+        )
+        _new_state, entry = execute_intent(
+            state, intent, _dataset([candle_t, candle_t1]),
+            _snapshot(min_ask="5000"), _config(),
+        )
+        # fill_price 99_500_000 * 0.001 = 99_500 gross (comfortably
+        # above the 5000 KRW min).
+        assert entry.gross_proceeds_krw.value == Decimal("99500.000")
+
+    def test_rounded_gross_below_min_fails_closed(self) -> None:
+        # Step-flooring drops gross under the KRW min → refuse.
+        # Request 0.00006 BTC, step 0.00001 → filled 0.00006 →
+        #   gross = 99_500_000 * 0.00006 = 5970 (above 5000 min).
+        # Tighten min to 6000 → 5970 < 6000 → refuse.
+        candle_t = _candle(T0)
+        candle_t1 = _candle(T0 + timedelta(minutes=UNIT))
+        snap = _snapshot(step="0.00001", min_ask="6000")
+        intent = OrderIntent.sell_from_signal(candle_t, Qty(Decimal("0.00006")))
+        state = LedgerState(
+            cash_krw=Money(Decimal("0")), position_qty=Qty(Decimal("0.001"))
+        )
+        with pytest.raises(BelowMinimumOrderError, match="gross_proceeds_krw"):
+            execute_intent(
+                state, intent, _dataset([candle_t, candle_t1]),
+                snap, _config(),
+            )
+
+    def test_sale_exactly_at_krw_min_boundary_passes(self) -> None:
+        # Boundary rule: check is strict `<`, so a sale whose gross
+        # equals the min passes. fill_price 99_500_000 * step 1e-6 =
+        # 99.5 KRW per step. Choose min = 4975 KRW and qty = 5e-5 BTC
+        # → gross = 4975 exactly. Not < min → pass.
+        candle_t = _candle(T0)
+        candle_t1 = _candle(T0 + timedelta(minutes=UNIT))
+        snap = _snapshot(step="0.000001", min_ask="4975")
+        intent = OrderIntent.sell_from_signal(candle_t, Qty(Decimal("0.00005")))
+        state = LedgerState(
+            cash_krw=Money(Decimal("0")), position_qty=Qty(Decimal("0.001"))
+        )
+        _new_state, entry = execute_intent(
+            state, intent, _dataset([candle_t, candle_t1]),
+            snap, _config(),
+        )
+        assert entry.gross_proceeds_krw.value == Decimal("4975.000000")
 
     def test_notional_cap_exceeded_sell(self) -> None:
         candle_t = _candle(T0)
