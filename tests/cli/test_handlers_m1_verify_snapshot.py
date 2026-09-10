@@ -92,3 +92,55 @@ class TestVerifySnapshotHandler:
         assert "load_secrets(" not in src
         assert "from bithumb_bot.secrets" not in src
         assert "import bithumb_bot.secrets" not in src
+
+
+class TestRequireExecutionReadyFlag:
+    """Batch 2 §3: `--require-execution-ready` turns unresolved readiness
+    into a non-zero exit; default invocation stays diagnostic (exits 0)."""
+
+    def test_default_invocation_exits_zero_when_readiness_unresolved(
+        self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The committed fixture yields an unresolved readiness report
+        # (five Batch-1B facts). Default invocation must still exit 0.
+        snap = _make_valid_snapshot(tmp_path)
+        rc = main(["m1", "verify-snapshot", "--snapshot", str(snap)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "execution_readiness:    unresolved" in out
+
+    def test_require_flag_exits_nonzero_when_readiness_unresolved(
+        self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        snap = _make_valid_snapshot(tmp_path)
+        rc = main(
+            [
+                "m1",
+                "verify-snapshot",
+                "--snapshot",
+                str(snap),
+                "--require-execution-ready",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "--require-execution-ready failed" in err
+        assert "unresolved" in err
+
+    def test_require_flag_still_reports_invalid_on_tampered_snapshot(
+        self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        snap = _make_valid_snapshot(tmp_path)
+        snap.write_bytes(snap.read_bytes()[:-1] + b"?")
+        rc = main(
+            [
+                "m1",
+                "verify-snapshot",
+                "--snapshot",
+                str(snap),
+                "--require-execution-ready",
+            ]
+        )
+        assert rc != 0
+        err = capsys.readouterr().err
+        assert "SidecarHashMismatchError" in err

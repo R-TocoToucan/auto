@@ -17,10 +17,12 @@ from bithumb_bot.config.validator import REPO_ROOT_ENV
 
 
 def _make_all_confirmed_bundle(tmp_path: Path) -> Path:
+    from bithumb_bot.artifact.canonical import write_with_sidecar
+
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
     snap = bundle_dir / "snap.json"
-    snap.write_bytes(b'{"ok":true}\n')
+    write_with_sidecar(snap, b'{"ok":true}\n')
     md_path, _ = write_verification_bundle(
         bundle_dir, snapshot_path=snap, fixture_paths=[]
     )
@@ -28,6 +30,10 @@ def _make_all_confirmed_bundle(tmp_path: Path) -> Path:
     text = text.replace(
         "**Status:** [ ] confirmed  [ ] contradicted  [ ] unresolved",
         "**Status:** [x] confirmed  [ ] contradicted  [ ] unresolved",
+    )
+    text = text.replace(
+        "**User approval status: human-approved by:** ",
+        "**User approval status: human-approved by:** op-test",
     )
     md_path.write_text(text, encoding="utf-8")
     return bundle_dir
@@ -64,10 +70,12 @@ class TestVerifyFactsHandler:
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
+        from bithumb_bot.artifact.canonical import write_with_sidecar
+
         bundle_dir = tmp_path / "bundle"
         bundle_dir.mkdir(parents=True, exist_ok=True)
         snap = bundle_dir / "snap.json"
-        snap.write_bytes(b'{"ok":true}\n')
+        write_with_sidecar(snap, b'{"ok":true}\n')
         write_verification_bundle(bundle_dir, snapshot_path=snap, fixture_paths=[])
         # DO NOT tick any box.
         rc = main(["m1", "verify-facts", "--bundle", str(bundle_dir)])

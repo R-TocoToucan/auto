@@ -192,3 +192,107 @@ class TestCredentialPresenceCheck:
         monkeypatch.setenv("BITHUMB_ACCOUNT_READ_SECRET_KEY", "any-value-not-read")
         result = validate(("m1", "fetch-spec"))
         assert result.ok is True
+
+    def test_m1_fetch_spec_ok_with_secrets_file_only(
+        self,
+        tmp_repo_root: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Credentials supplied ONLY through BITHUMB_BOT_SECRETS_FILE (no
+        env-var overlap) must satisfy validate() the same as env-only.
+        """
+        from bithumb_bot.secrets.loader import SECRETS_FILE_ENV
+
+        outside_dir = tmp_path_factory.mktemp("secrets_only_via_file")
+        secrets_file = outside_dir / "secrets.env"
+        secrets_file.write_text(
+            "BITHUMB_ACCOUNT_READ_ACCESS_KEY=file-only-access\n"
+            "BITHUMB_ACCOUNT_READ_SECRET_KEY=file-only-secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("BITHUMB_ACCOUNT_READ_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("BITHUMB_ACCOUNT_READ_SECRET_KEY", raising=False)
+        monkeypatch.setenv(SECRETS_FILE_ENV, str(secrets_file))
+        result = validate(("m1", "fetch-spec"))
+        assert result.ok is True, result
+
+
+# ---------------------------------------------------------------------------
+# Batch 2: enforcement completeness — every declared requirement dimension
+# is either enforced or fail-closed refused. Nothing silently no-ops.
+# ---------------------------------------------------------------------------
+
+
+class TestRequirementEnforcementCompleteness:
+    """No declared requirement in REGISTRY silently defaults to a no-op."""
+
+    def test_every_reserved_capability_is_refused_by_validate(
+        self,
+        tmp_repo_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path_factory: pytest.TempPathFactory,
+    ) -> None:
+        # Provide gate2 + gate3 so the future-gate check does not
+        # short-circuit before the additional enforcement branches.
+        gate2 = tmp_repo_root / "config" / "decisions" / "gate2.toml"
+        gate3 = tmp_repo_root / "config" / "decisions" / "gate3.toml"
+        gate2.write_text("status = 'frozen'\n", encoding="utf-8")
+        gate3.write_text("status = 'frozen'\n", encoding="utf-8")
+
+        from bithumb_bot.config.capability_registry import (
+            REGISTRY,
+            RESERVED_KEYS,
+            CapRequirement,
+            HumanAuthRequirement,
+            SnapshotRequirement,
+        )
+
+        # Every reserved capability declares AT LEAST one dimension
+        # (snapshot=VERIFIED_REQUIRED, cap in {MAY_BE_NULL,
+        # REQUIRED_NON_NULL}, or human_auth in {EXPLICIT_APPROVAL,
+        # ONE_TIME_APPROVAL}) that has no Phase-1 enforcement path.
+        # Batch 2 requires validate() to refuse fail-closed for each.
+        for key in sorted(RESERVED_KEYS):
+            row = REGISTRY[key]
+            result = validate(key)
+            assert result.ok is False, (
+                f"reserved capability {key!r} unexpectedly passed validate()"
+            )
+            # The refusal token must name the specific enforcement point.
+            token = result.missing[0] if result.missing else ""
+            expected_tokens = {
+                SnapshotRequirement.VERIFIED_REQUIRED: "snapshot_verified_required",
+                CapRequirement.MAY_BE_NULL: "cap_may_be_null_precondition",
+                CapRequirement.REQUIRED_NON_NULL: "cap_required_non_null",
+                HumanAuthRequirement.EXPLICIT_APPROVAL: "human_auth_explicit_approval",
+                HumanAuthRequirement.ONE_TIME_APPROVAL: "human_auth_one_time_approval",
+            }
+            possible = {
+                v
+                for enum_value, v in expected_tokens.items()
+                if enum_value in (row.snapshot, row.cap, row.human_auth)
+            }
+            assert token in possible, (
+                f"reserved capability {key!r} refused with unexpected token "
+                f"{token!r}; expected one of {sorted(possible)!r}"
+            )
+
+    def test_every_enum_value_appears_in_enforcement_map(self) -> None:
+        """Every SnapshotRequirement / CapRequirement / HumanAuthRequirement
+        member has an entry in the corresponding enforcement map — a new
+        enum member added without an entry would silently no-op."""
+        from bithumb_bot.config.capability_registry import (
+            CapRequirement,
+            HumanAuthRequirement,
+            SnapshotRequirement,
+        )
+        from bithumb_bot.config.validator import (
+            _CAP_ENFORCEMENT,
+            _HUMAN_AUTH_ENFORCEMENT,
+            _SNAPSHOT_ENFORCEMENT,
+        )
+
+        assert set(_SNAPSHOT_ENFORCEMENT.keys()) == set(SnapshotRequirement)
+        assert set(_CAP_ENFORCEMENT.keys()) == set(CapRequirement)
+        assert set(_HUMAN_AUTH_ENFORCEMENT.keys()) == set(HumanAuthRequirement)

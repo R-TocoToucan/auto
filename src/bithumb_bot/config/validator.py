@@ -17,15 +17,13 @@ approved freezes in Phase 3 / Phase 5.
 D-89: an unknown capability raises `UnknownCapabilityError` — capability
 requirements never default to an empty set.
 
-D-97: trade-credential prohibition is enforced by `secrets.loader.
-reject_trade_credentials` — this module invokes it as its final check
-for every capability with `trade_cred_prohibited=True` (which is every
-registered capability per D-97). On rejection this validator turns the
-raised `ProhibitedCredentialDetectedError` into a clean
-`ValidationResult(ok=False, missing=("trade_credential_prohibited",),
-reason=...)` so the CLI dispatcher can print a uniform refusal instead
-of a Python traceback. The actual credential value is never inspected
-anywhere in this call chain (D-68 / D-70).
+D-97: trade-credential prohibition is enforced via
+:func:`bithumb_bot.secrets.loader.reject_trade_credentials`.
+
+Batch 2 enforcement — every requirement dimension declared in the
+capability registry MUST either be enforced here or explicitly refused
+fail-closed as an "unsupported requirement" so no reserved handler runs
+believing an unenforced precondition was satisfied.
 """
 
 from __future__ import annotations
@@ -37,7 +35,10 @@ from pathlib import Path
 from bithumb_bot.config.capability_registry import (
     REGISTRY,
     CapabilityRequirements,
+    CapRequirement,
     CredRequirement,
+    HumanAuthRequirement,
+    SnapshotRequirement,
 )
 from bithumb_bot.config.gate_loader import load_gate1
 from bithumb_bot.errors import (
@@ -55,9 +56,7 @@ from bithumb_bot.secrets.loader import (
 # Env-var conventions
 # ---------------------------------------------------------------------------
 
-#: Env var used to override the repo-root for gate-file lookups. Tests set this
-#: so they can point the validator at a `tmp_path`-rooted config tree. In
-#: production the validator resolves the repo root via ``Path.cwd()``.
+#: Env var used to override the repo-root for gate-file lookups.
 REPO_ROOT_ENV = "BITHUMB_BOT_REPO_ROOT"
 
 #: D-67 credential-class env vars.
@@ -80,18 +79,7 @@ TRADE_ENV_VARS: tuple[str, str] = (
 
 @dataclass(frozen=True)
 class ValidationResult:
-    """Outcome of a `validate(capability)` call.
-
-    Attributes:
-        ok:       True iff every prerequisite for the requested capability
-                  was satisfied. False on the first missing prerequisite.
-        missing:  A tuple listing the specific prerequisites that could not
-                  be satisfied. Ordered by check order; the first entry is
-                  the one that short-circuited.
-        reason:   A human-readable message explaining the specific failure
-                  (parse-error text, missing-env-var name, etc.). None
-                  when ok=True.
-    """
+    """Outcome of a `validate(capability)` call."""
 
     ok: bool
     missing: tuple[str, ...] = field(default_factory=tuple)
@@ -113,16 +101,7 @@ def _resolve_repo_root() -> Path:
 def _check_trade_credential_prohibition(repo_root: Path) -> ValidationResult | None:
     """Return a failing ValidationResult iff a trade-cred env var is set.
 
-    D-68 / D-97: trade-permission credentials are prohibited pre-M6B for
-    every registered capability. Only the credential *class* is reported —
-    the value is never inspected.
-
-    Delegates to `bithumb_bot.secrets.loader.reject_trade_credentials`
-    (task 01-02-05). When that raises `ProhibitedCredentialDetectedError`
-    we translate it into a clean `ValidationResult(ok=False, ...)` so
-    the CLI dispatcher can print a uniform refusal string. The reason
-    text carries only the credential class ("trade") — no substring of
-    the value is ever spliced in (D-70).
+    Value is never inspected — only the credential *class* is reported.
     """
     try:
         settings = load_secrets(repo_root)
@@ -140,28 +119,40 @@ def _check_trade_credential_prohibition(repo_root: Path) -> ValidationResult | N
     return None
 
 
-def _check_cred(row: CapabilityRequirements) -> ValidationResult | None:
-    """Return a failing result iff the capability's required env vars are absent.
+def _check_cred(
+    row: CapabilityRequirements, repo_root: Path
+) -> ValidationResult | None:
+    """Return a failing result iff the capability's required credential is absent.
 
-    Never reads the credential VALUES — only checks env-var presence
-    (D-89 / D-70).
+    Uses :func:`bithumb_bot.secrets.loader.load_secrets` as the single
+    source of truth — a credential supplied only through an approved
+    external secrets file is accepted the same as an env-var value.
+    Only the fact of presence is inspected; values are never read.
     """
     if row.cred is CredRequirement.NONE:
         return None
     if row.cred is CredRequirement.ACCOUNT_READ_REQUIRED:
-        missing = [name for name in ACCOUNT_READ_ENV_VARS if not os.environ.get(name)]
-        if missing:
+        try:
+            settings = load_secrets(repo_root)
+        except ProhibitedCredentialDetectedError:
+            # The dedicated trade-cred check runs first; if we're here
+            # a load_secrets exception is a genuine config error.
+            raise
+        if (
+            settings.account_read_access_key is None
+            or settings.account_read_secret_key is None
+        ):
             return ValidationResult(
                 ok=False,
                 missing=("account_read_cred",),
                 reason=(
-                    "account/read credential class is required for this capability "
-                    f"but the following env vars are absent (values not inspected): "
-                    f"{', '.join(missing)}."
+                    "account/read credential class is required for this "
+                    "capability but neither the OS environment nor the "
+                    "external secrets file (BITHUMB_BOT_SECRETS_FILE) "
+                    "supplied both fields (values not inspected)."
                 ),
             )
         return None
-    # Defensive: enum extended in the future must be handled explicitly.
     raise UnknownCapabilityError(
         f"Unhandled CredRequirement value {row.cred!r}. Extend validator._check_cred."
     )
@@ -186,8 +177,6 @@ def _check_future_gate(
     """Check for the presence of a future gate file WITHOUT creating it (D-56)."""
     path = repo_root / "config" / "decisions" / f"{gate_name}.toml"
     if path.is_file():
-        # Future work: parse + validate. Phase 1 only checks presence per
-        # plan Behavior contract.
         return None
     phase_map = {"gate2": "Phase 3", "gate3": "Phase 5"}
     return ValidationResult(
@@ -201,21 +190,85 @@ def _check_future_gate(
     )
 
 
+# --- Batch 2: enforcement branches for the remaining requirement dimensions ---
+
+#: Snapshot-requirement enforcement map. ``None`` = no additional
+#: precondition; the handler consumes the snapshot via its own typed
+#: load path (``load_snapshot`` / ``verify_facts_bundle``). A tuple =
+#: refuse fail-closed with the given missing token + reason.
+_SNAPSHOT_ENFORCEMENT: dict[SnapshotRequirement, tuple[str, str] | None] = {
+    SnapshotRequirement.NONE: None,
+    SnapshotRequirement.EVIDENCE_INPUT: None,
+    SnapshotRequirement.CANDIDATE: None,
+    SnapshotRequirement.VERIFIED_REQUIRED: (
+        "snapshot_verified_required",
+        "capability requires a verified spec snapshot precondition, "
+        "which has no Phase-1 enforcement path. Refused fail-closed "
+        "until the requirement is implemented (D-90 phase discipline).",
+    ),
+}
+
+#: Applicability-cap enforcement map.
+_CAP_ENFORCEMENT: dict[CapRequirement, tuple[str, str] | None] = {
+    CapRequirement.NOT_REQUIRED: None,
+    CapRequirement.MAY_BE_NULL: (
+        "cap_may_be_null_precondition",
+        "capability's applicability-cap policy has no Phase-1 "
+        "enforcement path. Refused fail-closed (D-90 phase discipline).",
+    ),
+    CapRequirement.REQUIRED_NON_NULL: (
+        "cap_required_non_null",
+        "capability requires a frozen, non-null applicability cap "
+        "(Gate 2). No Phase-1 enforcement path exists — refused "
+        "fail-closed until Gate 2 is frozen (D-90 phase discipline).",
+    ),
+}
+
+#: Human-authorization enforcement map.
+_HUMAN_AUTH_ENFORCEMENT: dict[HumanAuthRequirement, tuple[str, str] | None] = {
+    HumanAuthRequirement.NONE: None,
+    HumanAuthRequirement.INVOCATION_ONLY: None,
+    HumanAuthRequirement.EXPLICIT_APPROVAL: (
+        "human_auth_explicit_approval",
+        "capability requires an invocation-scoped explicit human "
+        "approval step, which has no Phase-1 enforcement path. "
+        "Refused fail-closed (D-90 phase discipline).",
+    ),
+    HumanAuthRequirement.ONE_TIME_APPROVAL: (
+        "human_auth_one_time_approval",
+        "capability requires a one-time, non-persistent human "
+        "authorization step (holdout evaluate), which has no Phase-1 "
+        "enforcement path. Refused fail-closed (D-90 phase discipline).",
+    ),
+}
+
+
+def _check_snapshot(row: CapabilityRequirements) -> ValidationResult | None:
+    entry = _SNAPSHOT_ENFORCEMENT.get(row.snapshot)
+    if entry is None:
+        return None
+    token, reason = entry
+    return ValidationResult(ok=False, missing=(token,), reason=reason)
+
+
+def _check_cap(row: CapabilityRequirements) -> ValidationResult | None:
+    entry = _CAP_ENFORCEMENT.get(row.cap)
+    if entry is None:
+        return None
+    token, reason = entry
+    return ValidationResult(ok=False, missing=(token,), reason=reason)
+
+
+def _check_human_auth(row: CapabilityRequirements) -> ValidationResult | None:
+    entry = _HUMAN_AUTH_ENFORCEMENT.get(row.human_auth)
+    if entry is None:
+        return None
+    token, reason = entry
+    return ValidationResult(ok=False, missing=(token,), reason=reason)
+
+
 def validate(capability: tuple[str, str]) -> ValidationResult:
-    """Validate every prerequisite for `capability` per the D-88 guard matrix.
-
-    Args:
-        capability: `(verb, subverb)` tuple. MUST be a registered key —
-            unknown capabilities raise `UnknownCapabilityError` (D-89).
-
-    Returns:
-        ValidationResult(ok=True, ...) iff every prereq is satisfied.
-        ValidationResult(ok=False, missing=(...), reason=...) on the first
-        failing prereq (short-circuit — never partial-succeed).
-
-    Raises:
-        UnknownCapabilityError: capability not in REGISTRY (D-89).
-    """
+    """Validate every prerequisite for `capability` per the D-88 guard matrix."""
     row = REGISTRY.get(capability)
     if row is None:
         raise UnknownCapabilityError(
@@ -225,17 +278,11 @@ def validate(capability: tuple[str, str]) -> ValidationResult:
 
     repo_root = _resolve_repo_root()
 
-    # Trade-cred prohibition (D-97) — applies to every registered capability
-    # pre-M6B. Translated from ProhibitedCredentialDetectedError into a
-    # clean ValidationResult so the CLI dispatcher (plan 01-03) can print
-    # a uniform refusal string. Value is never inspected (D-70).
     if row.trade_cred_prohibited:
         trade_result = _check_trade_credential_prohibition(repo_root)
         if trade_result is not None:
             return trade_result
 
-    # Ordering of checks: gate1 → gate2 → gate3 → cred. First failing prereq
-    # short-circuits (D-59: load only what's required).
     if row.gate1:
         result = _check_gate1(repo_root)
         if result is not None:
@@ -251,9 +298,18 @@ def validate(capability: tuple[str, str]) -> ValidationResult:
         if result is not None:
             return result
 
-    result = _check_cred(row)
+    result = _check_cred(row, repo_root)
     if result is not None:
         return result
+
+    # Remaining requirement dimensions — every enum value declared in
+    # the registry is either enforced or refused fail-closed via the
+    # tables above. Checked after gate/cred so a missing gate2/gate3
+    # or credential still surfaces first.
+    for check in (_check_snapshot, _check_cap, _check_human_auth):
+        result = check(row)
+        if result is not None:
+            return result
 
     return ValidationResult(ok=True)
 

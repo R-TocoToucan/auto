@@ -155,13 +155,13 @@ class TestEndToEndOffline:
         md = (result.verification_bundle_dir / "VERIFICATION.md").read_text(
             encoding="utf-8"
         )
-        # Every fact section is present.
+        # Every fact section is present (Batch 2 fact set).
         for key in (
-            "ws_v1_public_v2_private_boundary",
-            "jwt_timestamp_claim_shape",
-            "legacy_stop_limit_deferred",
-            "orders_chance_pagination_cursor",
-            "per_channel_rate_limit_values",
+            "jwt_timestamp_and_query_hash_shape",
+            "fee_rates_bid_ask_provenance",
+            "min_total_bid_ask_krw_units",
+            "price_tick_and_quantity_step_provenance",
+            "market_order_and_buy_fee_reservation_readiness",
         ):
             assert f"## Fact: `{key}`" in md
         # None pre-checked.

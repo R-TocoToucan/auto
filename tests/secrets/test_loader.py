@@ -259,6 +259,52 @@ class TestRejectTradeCredentials:
 # ---------------------------------------------------------------------------
 
 
+class TestValidatorAcceptsFileOnlyAccountReadCreds:
+    """Batch 2 §4: account-read creds supplied ONLY via
+    BITHUMB_BOT_SECRETS_FILE must satisfy `validate(('m1','fetch-spec'))`.
+    """
+
+    def test_file_only_creds_pass_validator(
+        self,
+        tmp_path_factory: pytest.TempPathFactory,
+        tmp_gate1_toml: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from bithumb_bot.config.validator import REPO_ROOT_ENV, validate
+
+        repo_root = tmp_gate1_toml.parent.parent.parent
+        monkeypatch.setenv(REPO_ROOT_ENV, str(repo_root))
+        outside_dir = tmp_path_factory.mktemp("file_only_creds")
+        secrets_file = outside_dir / "secrets.env"
+        _write_env_file(
+            secrets_file,
+            {
+                "BITHUMB_ACCOUNT_READ_ACCESS_KEY": "file-only-access",
+                "BITHUMB_ACCOUNT_READ_SECRET_KEY": "file-only-secret",
+            },
+        )
+        monkeypatch.setenv(SECRETS_FILE_ENV, str(secrets_file))
+        for env_name in _ALL_CRED_ENV:
+            monkeypatch.delenv(env_name, raising=False)
+        result = validate(("m1", "fetch-spec"))
+        assert result.ok is True, result
+
+    def test_repo_local_secrets_file_still_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Path-safety enforcement from `_resolve_secrets_file` must
+        # still fire even for otherwise valid file-only credentials.
+        secrets_file = tmp_path / "sub" / "secrets.env"
+        secrets_file.parent.mkdir(parents=True)
+        _write_env_file(
+            secrets_file,
+            {"BITHUMB_ACCOUNT_READ_ACCESS_KEY": "v"},
+        )
+        monkeypatch.setenv(SECRETS_FILE_ENV, str(secrets_file))
+        with pytest.raises(SecretsFileInsideRepoError):
+            load_secrets(tmp_path)
+
+
 class TestValidatorTradeCredHook:
     """`validate()` should return ok=False instead of raising when a trade
     env var is set — per task 01-02-05 description: "return

@@ -257,6 +257,16 @@ def _build_parser() -> argparse.ArgumentParser:
         required=False,
         help="Path to the candidate snapshot file (plan 01-04).",
     )
+    p_m1_snap.add_argument(
+        "--require-execution-ready",
+        action="store_true",
+        default=False,
+        help=(
+            "Fail non-zero when execution readiness is unresolved. Default "
+            "invocation performs the artifact-integrity check and reports "
+            "readiness diagnostically (exits 0 even when unresolved)."
+        ),
+    )
 
     # -- D-87 reserved verbs (added by plan 01-03-08) ---------------------
     # Every reserved subparser is labelled `RESERVED — future phase, not

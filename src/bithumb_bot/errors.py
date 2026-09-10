@@ -366,6 +366,30 @@ class UnresolvedFactError(BithumbBotError):
         self.fact_name = fact_name
 
 
+class ObsoleteVerificationBundleError(BithumbBotError):
+    """Raised when a verification bundle uses an obsolete schema or fact set.
+
+    The verification schema is versioned (see
+    ``verification.MANIFEST_SCHEMA_VERSION``). Bundles produced against
+    an earlier fact set (e.g. one carrying the retired
+    ``orders_chance_pagination_cursor`` fact) MUST NOT be silently
+    accepted or asked to approve invalid facts — regenerate with the
+    current M1 command.
+
+    Carries only the bundle directory. No fact values or artifact
+    contents are read into the exception message.
+    """
+
+    def __init__(self, bundle_dir: object) -> None:
+        super().__init__(
+            f"Verification bundle at {bundle_dir!r} uses an obsolete "
+            "verification schema or fact set. Regenerate the bundle "
+            "with the current `bt m1 fetch-spec` before rerunning "
+            "verify-facts."
+        )
+        self.bundle_dir = bundle_dir
+
+
 __all__ = [
     "AmbiguousSecretsConfigurationError",
     "AuthConstructionError",
@@ -379,6 +403,7 @@ __all__ = [
     "MissingIntervalInStopWindowError",
     "NoNextCandleError",
     "NotionalCapExceededError",
+    "ObsoleteVerificationBundleError",
     "ProhibitedCredentialDetectedError",
     "PublicRestNotVerifiedError",
     "SecretsFileInsideRepoError",
