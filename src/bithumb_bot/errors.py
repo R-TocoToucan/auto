@@ -334,6 +334,29 @@ class CandleValidationError(BithumbBotError):
     """
 
 
+class PublicRestErrorResponseError(BithumbBotError):
+    """Raised when a public-REST endpoint returns an error envelope
+    (HTTP 200 with a top-level dict ``{"error": {...}}``, or a
+    non-retryable 4xx with the same shape) instead of the expected
+    JSON array payload.
+
+    Carries ONLY the HTTP status code and a strictly-sanitized error
+    identifier (Bithumb's error ``name`` field, coerced to a bounded
+    string; ``"unknown"`` if absent/hostile). The response body,
+    headers, and free-text error message are NEVER attached — they
+    would leak through logs and stderr.
+    """
+
+    def __init__(self, *, status: int, error_name: str, endpoint: str) -> None:
+        super().__init__(
+            f"public REST {endpoint} returned status={status} "
+            f"error_name={error_name!r}"
+        )
+        self.status = status
+        self.error_name = error_name
+        self.endpoint = endpoint
+
+
 class PublicRestNotVerifiedError(BithumbBotError):
     """Raised when a real network fetch is attempted before the public
     REST rate-limit configuration is a frozen M1 verification item.
@@ -405,6 +428,7 @@ __all__ = [
     "NotionalCapExceededError",
     "ObsoleteVerificationBundleError",
     "ProhibitedCredentialDetectedError",
+    "PublicRestErrorResponseError",
     "PublicRestNotVerifiedError",
     "SecretsFileInsideRepoError",
     "SidecarHashMismatchError",

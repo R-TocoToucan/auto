@@ -19,6 +19,7 @@ import pytest
 from bithumb_bot.core.money import Money, Qty
 from bithumb_bot.errors import (
     CandleValidationError,
+    PublicRestErrorResponseError,
     PublicRestNotVerifiedError,
 )
 from bithumb_bot.market_data.candles import (
@@ -235,7 +236,7 @@ class TestFetchCandlesPagination:
         end = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
         opens = [start + i * timedelta(hours=4) for i in range(6)]
         # Page returned descending, `to = end` KST-formatted.
-        to_kst = "2026-01-02T09:00:00+09:00"
+        to_kst = "2026-01-02T09:00:00"
         pages = {to_kst: [_row(t) for t in reversed(opens)]}
         result = asyncio.run(
             fetch_candles(
@@ -264,7 +265,7 @@ class TestFetchCandlesPagination:
         cursor = end
         remaining = list(reversed(opens))  # descending
         while remaining:
-            key = (cursor + timedelta(hours=9)).strftime("%Y-%m-%dT%H:%M:%S+09:00")
+            key = (cursor + timedelta(hours=9)).strftime("%Y-%m-%dT%H:%M:%S")
             chunk = remaining[:200]
             pages[key] = [_row(t) for t in chunk]
             remaining = remaining[200:]
@@ -291,10 +292,9 @@ class TestFetchCandlesPagination:
 
     def test_incomplete_current_candle_excluded(self) -> None:
         # end_utc requests future; effective_end must be floored to the
-        # last CLOSED candle boundary. now is 05:15 → last closed 4h
-        # candle opens at 00:00 (closes at 04:00). effective_end = 04:00.
-        # Requested start = 20:00 previous day → expected candles:
-        # 20:00, 00:00. The in-progress 04:00 candle is excluded.
+        # last COMPLETED Bithumb-grid candle opening (KST 4h ticks =
+        # UTC 03/07/11/15/19/23). now is 05:15 UTC → floor to 03:00
+        # UTC (= 12:00 KST). effective_end = 03:00.
         start = datetime(2026, 1, 1, 20, 0, tzinfo=UTC)
         end = datetime(2026, 1, 2, 8, 0, tzinfo=UTC)  # goes past incomplete candle
         now = datetime(2026, 1, 2, 5, 15, tzinfo=UTC)
@@ -302,8 +302,8 @@ class TestFetchCandlesPagination:
             datetime(2026, 1, 1, 20, 0, tzinfo=UTC),
             datetime(2026, 1, 2, 0, 0, tzinfo=UTC),
         ]
-        # Effective end is 04:00 UTC = 13:00 KST.
-        to_kst = "2026-01-02T13:00:00+09:00"
+        # Effective end is 03:00 UTC = 12:00 KST (naive `to` cursor).
+        to_kst = "2026-01-02T12:00:00"
         pages = {to_kst: [_row(t) for t in reversed(opens)]}
         result = asyncio.run(
             fetch_candles(
@@ -316,15 +316,18 @@ class TestFetchCandlesPagination:
                 now_utc=_fixed_now(now),
             )
         )
-        assert result.effective_end_utc == datetime(2026, 1, 2, 4, 0, tzinfo=UTC)
+        assert result.effective_end_utc == datetime(2026, 1, 2, 3, 0, tzinfo=UTC)
         assert [c.open_time_utc for c in result.candles] == opens
 
-    def test_uses_kst_cursor_not_utc(self) -> None:
-        # Verify the `to` query param is KST-formatted with +09:00 suffix.
+    def test_uses_kst_cursor_naive_no_offset(self) -> None:
+        # Regression: Bithumb's `/v1/candles/minutes/{unit}` REJECTS
+        # explicit-offset forms (`+09:00`, `Z`) and returns HTTP 200
+        # with `{"error": {...}}`. Only the NAIVE KST form is
+        # accepted. The `to` param MUST NOT contain any offset suffix.
         start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
         end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
         opens = [start]
-        to_kst = "2026-01-01T13:00:00+09:00"  # 04:00 UTC = 13:00 KST
+        to_kst = "2026-01-01T13:00:00"  # 04:00 UTC = 13:00 KST, naive
         pages = {to_kst: [_row(t) for t in reversed(opens)]}
         captured: list[httpx.Request] = []
         asyncio.run(
@@ -340,7 +343,9 @@ class TestFetchCandlesPagination:
         )
         [req] = captured
         assert req.url.params["to"] == to_kst
-        assert "+09:00" in req.url.params["to"]
+        # No offset suffix — naive KST only.
+        assert "+" not in req.url.params["to"]
+        assert not req.url.params["to"].endswith("Z")
 
     def test_missing_intervals_reported_not_fabricated(self) -> None:
         # Request 24h (6 candles) but only 3 come back. The other 3 land
@@ -357,7 +362,7 @@ class TestFetchCandlesPagination:
             datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
             datetime(2026, 1, 1, 20, 0, tzinfo=UTC),
         ]
-        to_kst = "2026-01-02T09:00:00+09:00"
+        to_kst = "2026-01-02T09:00:00"
         pages = {to_kst: [_row(t) for t in reversed(returned_opens)]}
         result = asyncio.run(
             fetch_candles(
@@ -384,8 +389,8 @@ class TestFetchCandlesPagination:
         end = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
         t0 = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
         t1 = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
-        page1_to = "2026-01-01T17:00:00+09:00"  # 08:00 UTC
-        page2_to = "2026-01-01T13:00:00+09:00"  # 04:00 UTC
+        page1_to = "2026-01-01T17:00:00"  # 08:00 UTC
+        page2_to = "2026-01-01T13:00:00"  # 04:00 UTC
         pages = {
             page1_to: [_row(t1)],  # server returned only 1 row
             page2_to: [_row(t1), _row(t0)],  # re-emits t1 identically + t0
@@ -410,8 +415,8 @@ class TestFetchCandlesPagination:
         end = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
         t0 = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
         t1 = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
-        page1_to = "2026-01-01T17:00:00+09:00"
-        page2_to = "2026-01-01T13:00:00+09:00"
+        page1_to = "2026-01-01T17:00:00"
+        page2_to = "2026-01-01T13:00:00"
         pages = {
             page1_to: [_row(t1, c="105")],
             # `c` still inside [low=90, high=110] so per-row OHLC passes;
@@ -437,7 +442,7 @@ class TestFetchCandlesPagination:
         start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
         end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
         precise = "12345.678901234567890123"
-        to_kst = "2026-01-01T13:00:00+09:00"
+        to_kst = "2026-01-01T13:00:00"
         pages = {
             to_kst: [
                 _row(start, o=precise, h=precise, lo=precise, c=precise, v=precise)
@@ -701,3 +706,222 @@ class TestRealJsonNumericShapes:
         [candle] = result.candles
         assert candle.open.value == Decimal(precise)
         assert candle.volume.value == Decimal(precise)
+
+
+# ---------------------------------------------------------------------------
+# Regression suite for the real-endpoint wiring exposed 2026-09-11
+# ---------------------------------------------------------------------------
+#
+# Root causes proven with the live public endpoint:
+#   1. `to` cursor MUST be naive KST (no `+09:00`/`Z`); the offset
+#      forms return HTTP 200 with a `{"error": {...}}` envelope.
+#   2. Error envelopes must raise a dedicated error carrying only
+#      HTTP status + sanitized error name — NEVER get misreported as
+#      "candles response must be a JSON array, got dict".
+
+
+def _error_response_bytes(*, name: "int | str" = 40001, message: str = "bad") -> bytes:
+    """Bithumb-shaped error envelope payload (as empirically observed)."""
+    import json as _json
+
+    return _json.dumps({"error": {"name": name, "message": message}}).encode("utf-8")
+
+
+def _error_transport(
+    status: int = 200,
+    *,
+    name: "int | str" = 40001,
+) -> httpx.MockTransport:
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status,
+            content=_error_response_bytes(name=name),
+            headers={"content-type": "application/json"},
+        )
+
+    return httpx.MockTransport(_handler)
+
+
+class TestOutgoingRequestShape:
+    def test_exact_path_and_query_parameters(self) -> None:
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
+        opens = [start]
+        to_kst = "2026-01-01T13:00:00"
+        pages = {to_kst: [_row(t) for t in reversed(opens)]}
+        captured: list[httpx.Request] = []
+        asyncio.run(
+            fetch_candles(
+                "KRW-BTC",
+                unit_minutes=UNIT,
+                start_utc=start,
+                end_utc=end,
+                bucket=_fast_bucket(),
+                transport=_mock_paged_transport(pages, captured_requests=captured),
+                now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+            )
+        )
+        [req] = captured
+        assert req.method == "GET"
+        assert req.url.path == "/v1/candles/minutes/240"
+        assert req.url.params["market"] == "KRW-BTC"
+        assert req.url.params["count"] == "200"
+        assert req.url.params["to"] == to_kst
+        assert "authorization" not in {k.lower() for k in req.headers.keys()}
+
+    def test_to_cursor_is_utc_to_kst_conversion(self) -> None:
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
+        opens = [start]
+        pages = {"2026-01-01T13:00:00": [_row(t) for t in reversed(opens)]}
+        captured: list[httpx.Request] = []
+        asyncio.run(
+            fetch_candles(
+                "KRW-BTC",
+                unit_minutes=UNIT,
+                start_utc=start,
+                end_utc=end,
+                bucket=_fast_bucket(),
+                transport=_mock_paged_transport(pages, captured_requests=captured),
+                now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+            )
+        )
+        sent = captured[0].url.params["to"]
+        assert sent == "2026-01-01T13:00:00"
+        assert "+09:00" not in sent and "Z" not in sent
+
+
+class TestErrorEnvelopeRefusal:
+    def test_http_200_dict_envelope_raises_dedicated_error(self) -> None:
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
+        with pytest.raises(PublicRestErrorResponseError) as exc_info:
+            asyncio.run(
+                fetch_candles(
+                    "KRW-BTC",
+                    unit_minutes=UNIT,
+                    start_utc=start,
+                    end_utc=end,
+                    bucket=_fast_bucket(),
+                    transport=_error_transport(status=200, name=40001),
+                    now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+                )
+            )
+        err = exc_info.value
+        assert err.status == 200
+        assert err.error_name == "40001"
+        assert err.endpoint == "/v1/candles/minutes/240"
+
+    def test_http_4xx_error_object_raises_dedicated_error(self) -> None:
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
+        with pytest.raises(PublicRestErrorResponseError) as exc_info:
+            asyncio.run(
+                fetch_candles(
+                    "KRW-BTC",
+                    unit_minutes=UNIT,
+                    start_utc=start,
+                    end_utc=end,
+                    bucket=_fast_bucket(),
+                    transport=_error_transport(status=400, name="jwt_verification"),
+                    now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+                )
+            )
+        assert exc_info.value.status == 400
+        assert exc_info.value.error_name == "jwt_verification"
+
+    def test_hostile_error_name_collapses_to_unknown(self) -> None:
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
+        with pytest.raises(PublicRestErrorResponseError) as exc_info:
+            asyncio.run(
+                fetch_candles(
+                    "KRW-BTC",
+                    unit_minutes=UNIT,
+                    start_utc=start,
+                    end_utc=end,
+                    bucket=_fast_bucket(),
+                    transport=_error_transport(status=200, name="bad\nname"),
+                    now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+                )
+            )
+        assert exc_info.value.error_name == "unknown"
+
+    def test_array_success_still_returns_candles(self) -> None:
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
+        opens = [start]
+        pages = {"2026-01-01T13:00:00": [_row(t) for t in reversed(opens)]}
+        result = asyncio.run(
+            fetch_candles(
+                "KRW-BTC",
+                unit_minutes=UNIT,
+                start_utc=start,
+                end_utc=end,
+                bucket=_fast_bucket(),
+                transport=_mock_paged_transport(pages),
+                now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+            )
+        )
+        assert len(result.candles) == 1
+        assert result.candles[0].open_time_utc == start
+
+
+class TestPaginationBackwardWithoutLoop:
+    def test_pagination_moves_strictly_backward_no_duplicate_pages(self) -> None:
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 2, 8, 0, tzinfo=UTC)
+        opens_desc_page1 = [
+            datetime(2026, 1, 2, 4, 0, tzinfo=UTC),
+            datetime(2026, 1, 2, 0, 0, tzinfo=UTC),
+        ]
+        opens_desc_page2 = [
+            datetime(2026, 1, 1, 20, 0, tzinfo=UTC),
+            datetime(2026, 1, 1, 16, 0, tzinfo=UTC),
+            datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+            datetime(2026, 1, 1, 8, 0, tzinfo=UTC),
+            datetime(2026, 1, 1, 4, 0, tzinfo=UTC),
+            datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+        ]
+        page1_to = "2026-01-02T17:00:00"  # end 08:00 UTC = 17:00 KST
+        page2_to = "2026-01-02T09:00:00"  # oldest page1 = 00:00 UTC = 09:00 KST
+        pages = {
+            page1_to: [_row(t) for t in opens_desc_page1],
+            page2_to: [_row(t) for t in opens_desc_page2],
+        }
+        captured: list[httpx.Request] = []
+        result = asyncio.run(
+            fetch_candles(
+                "KRW-BTC",
+                unit_minutes=UNIT,
+                start_utc=start,
+                end_utc=end,
+                bucket=_fast_bucket(),
+                transport=_mock_paged_transport(pages, captured_requests=captured),
+                now_utc=_fixed_now(datetime(2026, 1, 3, 0, 0, tzinfo=UTC)),
+            )
+        )
+        sent_cursors = [req.url.params["to"] for req in captured]
+        assert sent_cursors == sorted(sent_cursors, reverse=True)
+        assert len(sent_cursors) == len(set(sent_cursors))
+        for c in result.candles:
+            assert start <= c.open_time_utc < end
+
+    def test_server_repeating_same_page_breaks_out(self) -> None:
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        end = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
+        pages = {
+            "2026-01-01T17:00:00": [_row(datetime(2026, 1, 1, 4, 0, tzinfo=UTC))],
+        }
+        result = asyncio.run(
+            fetch_candles(
+                "KRW-BTC",
+                unit_minutes=UNIT,
+                start_utc=start,
+                end_utc=end,
+                bucket=_fast_bucket(),
+                transport=_mock_paged_transport(pages),
+                now_utc=_fixed_now(datetime(2026, 1, 2, 0, 0, tzinfo=UTC)),
+            )
+        )
+        assert len(result.candles) == 1

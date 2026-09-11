@@ -46,6 +46,7 @@ Exactness:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
@@ -57,12 +58,25 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, PlainSerializer
 from bithumb_bot.artifact.timestamps import utc_now
 from bithumb_bot.bithumb_spec.http_client import create_client, request_with_retry
 from bithumb_bot.core.money import Money, Qty
-from bithumb_bot.errors import CandleValidationError, PublicRestNotVerifiedError
+from bithumb_bot.errors import (
+    CandleValidationError,
+    PublicRestErrorResponseError,
+    PublicRestNotVerifiedError,
+)
 from bithumb_bot.rate_limit.token_bucket import TokenBucket
 
 _DEFAULT_BASE_URL = "https://api.bithumb.com"
 _MAX_COUNT_PER_PAGE = 200
 _KST: timezone = timezone(timedelta(hours=9))
+_KST_OFFSET_S = 9 * 3600
+
+# Bounded, defensive allowlist for the Bithumb error `name` field
+# (the response envelope's only stable identifier). Bithumb has been
+# observed serving both string names (e.g. "jwt_verification") and
+# integer codes (e.g. 40004); both are accepted and stringified.
+# Anything else collapses to the sentinel "unknown" — a hostile /
+# malformed body cannot smuggle payload bytes into a log line.
+_ERROR_NAME_STR_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 
 # D-40 retry semantics reused for the public REST path.
 _CONNECT_TIMEOUT_S = 5.0
@@ -235,8 +249,34 @@ def _require_utc(name: str, value: datetime) -> datetime:
     return value
 
 
+def _bithumb_grid_offset_s(unit_minutes: int) -> int:
+    """Return the Unix-epoch offset (seconds) at which Bithumb's
+    candle grid for ``unit_minutes`` opens.
+
+    Bithumb aligns candle opens to KST wall-clock boundaries. For
+    units that divide 540 (60, 15, 5, 1) the KST and UTC grids
+    coincide (offset 0). For 240-min (and any other unit where
+    ``540 mod unit != 0``) the grid is shifted from UTC epoch by
+    ``(unit - (540 mod unit)) mod unit`` minutes — 240m candles open
+    at KST {00,04,08,12,16,20} = UTC {15,19,23,03,07,11}, offset
+    10800 s.
+    """
+    kst_offset_min = 9 * 60
+    return ((unit_minutes - (kst_offset_min % unit_minutes)) % unit_minutes) * 60
+
+
+def _floor_to_bithumb_grid(instant: datetime, unit_minutes: int) -> datetime:
+    """Floor ``instant`` DOWN to the previous Bithumb-grid boundary."""
+    seconds = int(instant.replace(tzinfo=UTC).timestamp())
+    unit_s = unit_minutes * 60
+    offset = _bithumb_grid_offset_s(unit_minutes)
+    grid_seconds = seconds - offset
+    floored = (grid_seconds // unit_s) * unit_s + offset
+    return datetime.fromtimestamp(floored, tz=UTC)
+
+
 def _floor_to_unit(instant: datetime, unit_minutes: int) -> datetime:
-    """Floor ``instant`` down to the previous ``unit_minutes`` UTC boundary."""
+    """Floor ``instant`` DOWN to the previous UTC-aligned boundary."""
     seconds = int(instant.replace(tzinfo=UTC).timestamp())
     unit_s = unit_minutes * 60
     floored = (seconds // unit_s) * unit_s
@@ -244,19 +284,67 @@ def _floor_to_unit(instant: datetime, unit_minutes: int) -> datetime:
 
 
 def _is_on_boundary(instant: datetime, unit_minutes: int) -> bool:
-    return _floor_to_unit(instant, unit_minutes) == instant
+    """True iff ``instant`` lands on either the UTC-aligned or the
+    Bithumb-native grid boundary for ``unit_minutes``.
+
+    Widened from strict UTC-alignment because Bithumb's 240-min series
+    opens on KST 4h ticks (UTC hours 03/07/11/15/19/23), NOT on UTC
+    4h ticks. For units that divide 540 the two grids coincide, so
+    this is equivalent to the classic UTC check.
+    """
+    seconds = int(instant.replace(tzinfo=UTC).timestamp())
+    unit_s = unit_minutes * 60
+    if seconds % unit_s == 0:
+        return True
+    offset = _bithumb_grid_offset_s(unit_minutes)
+    return (seconds - offset) % unit_s == 0
 
 
 def _to_kst_cursor(utc_boundary: datetime) -> str:
     """Render ``utc_boundary`` as an ISO-8601 KST cursor for the ``to`` param.
 
     Bithumb documents ``to`` as KST and excludes the candle at that
-    timestamp. We render as ``YYYY-MM-DDTHH:MM:SS+09:00`` — explicit
-    ``+09:00`` offset removes any ambiguity between the two forms the
-    docs accept.
+    timestamp. Empirically confirmed on 2026-09-11: the endpoint
+    REJECTS the ``+09:00`` and ``Z`` explicit-offset forms (returns
+    HTTP 200 with ``{"error": {...}}``) and accepts only the naive
+    forms ``YYYY-MM-DDTHH:MM:SS`` and ``YYYY-MM-DD HH:MM:SS``. We
+    render the ``T``-separated naive form.
+
+    This is the SOLE UTC→KST conversion point on the outbound path;
+    every candle timestamp returned by Bithumb is normalized back to
+    UTC on the inbound path via ``candle_date_time_utc``.
     """
     kst = utc_boundary.astimezone(_KST)
-    return kst.strftime("%Y-%m-%dT%H:%M:%S+09:00")
+    return kst.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _sanitize_public_rest_error_name(payload: Any) -> str:
+    """Return a bounded, allowlisted identifier for an error envelope.
+
+    Accepts:
+
+    * ``payload["error"]["name"]`` as a string matching
+      :data:`_ERROR_NAME_STR_PATTERN`.
+    * ``payload["error"]["name"]`` as a non-negative int no larger
+      than 6 digits — coerced to ``str``. Bithumb emits both shapes.
+
+    Anything else (missing, wrong type, hostile bytes) returns the
+    sentinel ``"unknown"``. The response body / free-text message
+    are NEVER carried forward.
+    """
+    if not isinstance(payload, dict):
+        return "unknown"
+    err = payload.get("error")
+    if not isinstance(err, dict):
+        return "unknown"
+    name = err.get("name")
+    if isinstance(name, bool):
+        return "unknown"
+    if isinstance(name, int) and 0 <= name <= 999999:
+        return str(name)
+    if isinstance(name, str) and _ERROR_NAME_STR_PATTERN.match(name):
+        return name
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +557,7 @@ async def fetch_candles(
             "provide a verified transport AND rate-limit bucket."
         )
 
-    current_boundary = _floor_to_unit(now_utc(), unit_minutes)
+    current_boundary = _floor_to_bithumb_grid(now_utc(), unit_minutes)
     effective_end = min(end_utc, current_boundary)
     if effective_end <= start_utc:
         return FetchResult(
@@ -511,10 +599,36 @@ async def fetch_candles(
                 backoff_cap_ms=_BACKOFF_CAP_MS,
                 bucket=bucket,
             )
+            # Parse first so an HTTP-200 error envelope becomes a
+            # dedicated `PublicRestErrorResponseError` (with a
+            # sanitized name) rather than a misleading
+            # `CandleValidationError` or a raw raise_for_status().
+            raw_rows: Any
+            try:
+                raw_rows = json.loads(response.text, parse_float=Decimal)
+            except ValueError:
+                # Non-JSON body → surface the HTTP status via
+                # raise_for_status if it's an error status; otherwise
+                # refuse with the array-shape validator so the caller
+                # sees a specific message.
+                response.raise_for_status()
+                raise CandleValidationError(
+                    f"candles response is not valid JSON (HTTP "
+                    f"{response.status_code})"
+                )
+            if isinstance(raw_rows, dict):
+                # Error envelope — Bithumb returns HTTP 200 for many
+                # request-shape refusals (e.g. rejecting `to` cursors
+                # with an explicit offset) with body
+                # ``{"error": {"name": <str|int>, "message": <str>}}``.
+                # 4xx error envelopes take the same shape.
+                error_name = _sanitize_public_rest_error_name(raw_rows)
+                raise PublicRestErrorResponseError(
+                    status=response.status_code,
+                    error_name=error_name,
+                    endpoint=endpoint,
+                )
             response.raise_for_status()
-            # Parse with parse_float=Decimal so JSON-number prices/volumes
-            # reach Decimal without a float in between (D-49).
-            raw_rows: Any = json.loads(response.text, parse_float=Decimal)
             if not isinstance(raw_rows, list):
                 raise CandleValidationError(
                     f"candles response must be a JSON array, got "
@@ -556,12 +670,25 @@ async def fetch_candles(
 
     candles = tuple(sorted(seen.values(), key=lambda c: c.open_time_utc))
 
-    # Missing-interval report. Expected opens = [start, effective_end) step unit.
+    # Missing-interval report. The expected grid is derived from the
+    # ACTUAL alignment of the observed candles (Bithumb-native for
+    # 240-min real data; UTC-aligned for the injected-mock tests) so
+    # that a well-formed one-year fetch reports zero gaps even when
+    # `start_utc` is not itself on Bithumb's KST-aligned candle grid.
+    # With no candles observed, fall back to the Bithumb-native grid.
+    unit_s = unit_minutes * 60
+    if candles:
+        grid_offset_s = int(candles[0].open_time_utc.timestamp()) % unit_s
+    else:
+        grid_offset_s = _bithumb_grid_offset_s(unit_minutes)
+    start_epoch = int(start_utc.timestamp())
+    end_epoch = int(effective_end.timestamp())
+    first_epoch = start_epoch + ((grid_offset_s - start_epoch) % unit_s)
     expected: list[datetime] = []
-    t = start_utc
-    while t < effective_end:
-        expected.append(t)
-        t = t + unit_delta
+    t_epoch = first_epoch
+    while t_epoch < end_epoch:
+        expected.append(datetime.fromtimestamp(t_epoch, tz=UTC))
+        t_epoch += unit_s
     observed = {c.open_time_utc for c in candles}
     missing = tuple(t for t in expected if t not in observed)
 
