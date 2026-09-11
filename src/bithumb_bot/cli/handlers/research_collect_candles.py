@@ -17,8 +17,14 @@ import asyncio
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
+
+if TYPE_CHECKING:
+    import httpx
+
+    from bithumb_bot.market_data.candles import FetchResult
 
 from bithumb_bot.config.validator import validate
 
@@ -30,6 +36,29 @@ def _parse_utc(name: str, raw: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def _make_public_rest_transport() -> "httpx.AsyncHTTPTransport":
+    """Production `AsyncHTTPTransport` for the public REST channel.
+
+    Constructing the transport here (rather than letting the library
+    default apply) satisfies the fail-closed contract in
+    :func:`bithumb_bot.market_data.candles.fetch_candles` — library
+    callers that pass ``transport=None`` still refuse with
+    :class:`~bithumb_bot.errors.PublicRestNotVerifiedError`. Only the
+    production CLI opts into a real socket, and this is the single
+    seam tests substitute to exercise the full handler wiring under
+    an `httpx.MockTransport`.
+
+    ``AsyncHTTPTransport()`` with default arguments performs no
+    proxy discovery from ambient env vars; combined with
+    ``trust_env=False`` on the client built by
+    :func:`~bithumb_bot.bithumb_spec.http_client.create_client`,
+    exchange traffic never routes through a shell-configured proxy.
+    """
+    import httpx
+
+    return httpx.AsyncHTTPTransport()
 
 
 def handler(args: argparse.Namespace) -> int:
@@ -67,17 +96,23 @@ def handler(args: argparse.Namespace) -> int:
         write_dataset_with_sidecar,
     )
 
-    try:
-        result = asyncio.run(
-            fetch_candles(
+    transport = _make_public_rest_transport()
+
+    async def _run() -> "FetchResult":
+        try:
+            return await fetch_candles(
                 market,
                 unit_minutes=unit_minutes,
                 start_utc=start_utc,
                 end_utc=end_utc,
                 bucket=rate_limits.public_rest,
-                transport=getattr(args, "_transport", None),
+                transport=transport,
             )
-        )
+        finally:
+            await transport.aclose()
+
+    try:
+        result = asyncio.run(_run())
     except Exception as exc:
         log.error(
             "research.collect-candles.fetch_failed",

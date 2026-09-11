@@ -268,3 +268,170 @@ class TestNoBrokerOrHoldoutSideEffect:
             import asyncio
 
             asyncio.run(client.aclose())
+
+
+class TestProductionWiring:
+    """Regression coverage for the fetched CLI wiring.
+
+    Pre-fix bug: the production handler forwarded ``transport=None`` to
+    :func:`fetch_candles`, which fail-closed with
+    :class:`PublicRestNotVerifiedError`. These tests pin the fix in
+    place: the handler MUST construct a real transport and MUST pass
+    the frozen ``public_rest`` bucket, while the library-level guard
+    stays intact.
+    """
+
+    def test_production_wiring_supplies_real_transport_and_verified_bucket(
+        self,
+        _env: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The un-monkey-patched handler must reach `fetch_candles` with:
+
+        * a `transport` that came from `_make_public_rest_transport`
+          (production socket factory — swapped here for a MockTransport
+          via the module-local seam, no real network I/O),
+        * the module-level frozen `public_rest` bucket (identity check),
+        * the exact market/unit/start/end from argv,
+
+        and must produce a dataset + SHA-256 sidecar with no
+        credentials/JWT/Authorization headers on the wire.
+        """
+        import bithumb_bot.cli.handlers.research_collect_candles as handler_mod
+        import bithumb_bot.market_data.candles as candles_mod
+        from bithumb_bot.bithumb_spec import rate_limits
+
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        c0 = _valid_row(start, price=100_000_000)
+
+        captured_headers: list[dict[str, str]] = []
+
+        def _http_handler(request: httpx.Request) -> httpx.Response:
+            captured_headers.append(dict(request.headers))
+            assert request.url.path.startswith("/v1/candles/minutes/")
+            return httpx.Response(200, json=[c0])
+
+        mock_transport = httpx.MockTransport(_http_handler)
+        transport_factory_calls: dict[str, int] = {"count": 0}
+
+        def _fake_factory() -> httpx.MockTransport:
+            transport_factory_calls["count"] += 1
+            return mock_transport
+
+        monkeypatch.setattr(
+            handler_mod, "_make_public_rest_transport", _fake_factory
+        )
+
+        # Fix `now` so `effective_end` covers our single-candle window.
+        monkeypatch.setattr(
+            candles_mod,
+            "utc_now",
+            lambda: datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+        )
+
+        # Spy on the real fetch_candles to record what the handler
+        # passes through (bucket identity, transport identity, args).
+        recorded: dict[str, object] = {}
+        real_fetch = candles_mod.fetch_candles
+
+        async def _spy_fetch(*args: object, **kwargs: object) -> object:
+            recorded["positional"] = args
+            recorded["bucket_is_public_rest"] = (
+                kwargs.get("bucket") is rate_limits.public_rest
+            )
+            recorded["transport_is_mock"] = kwargs.get("transport") is mock_transport
+            recorded["unit_minutes"] = kwargs.get("unit_minutes")
+            recorded["start_utc"] = kwargs.get("start_utc")
+            recorded["end_utc"] = kwargs.get("end_utc")
+            return await real_fetch(*args, **kwargs)
+
+        monkeypatch.setattr(candles_mod, "fetch_candles", _spy_fetch)
+
+        # No credentials of any Bithumb-related class in this session.
+        for name in list(__import__("os").environ):
+            if name.startswith("BITHUMB_"):
+                monkeypatch.delenv(name, raising=False)
+
+        out = tmp_path / "prod.dataset.json"
+        rc = main(
+            [
+                "research",
+                "collect-candles",
+                "--market",
+                "KRW-BTC",
+                "--unit-minutes",
+                "240",
+                "--start-utc",
+                start.isoformat(),
+                "--end-utc",
+                (start + timedelta(minutes=240)).isoformat(),
+                "--out",
+                str(out),
+            ]
+        )
+        assert rc == 0, capsys.readouterr()
+
+        # Production wiring: real transport factory was invoked exactly
+        # once, and the resulting transport reached fetch_candles.
+        assert transport_factory_calls["count"] == 1
+        assert recorded["transport_is_mock"] is True
+        # Frozen verified public-REST bucket was supplied (identity).
+        assert recorded["bucket_is_public_rest"] is True
+        # Request args flowed unchanged from argv to fetch_candles.
+        assert recorded["positional"] == ("KRW-BTC",)
+        assert recorded["unit_minutes"] == 240
+        assert recorded["start_utc"] == start
+        assert recorded["end_utc"] == start + timedelta(minutes=240)
+
+        # No credential / JWT header on the wire (public REST only).
+        assert captured_headers, "expected at least one intercepted request"
+        for headers in captured_headers:
+            for key in headers:
+                assert key.lower() != "authorization", headers
+            for value in headers.values():
+                assert "Bearer " not in value, headers
+
+        # Dataset + SHA-256 sidecar written to the requested path.
+        assert out.is_file()
+        assert out.with_name(out.name + ".sha256").is_file()
+
+    def test_pre_fix_missing_transport_still_refuses(self) -> None:
+        """The library-level guard must remain: a caller that omits
+        ``transport`` (the exact pre-fix production call shape) still
+        fails-closed with `PublicRestNotVerifiedError`. This locks in
+        that the fix is CLI-wiring only, not a guard weakening."""
+        import asyncio
+
+        from bithumb_bot.bithumb_spec import rate_limits
+        from bithumb_bot.errors import PublicRestNotVerifiedError
+        from bithumb_bot.market_data.candles import fetch_candles
+
+        start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        with pytest.raises(PublicRestNotVerifiedError):
+            asyncio.run(
+                fetch_candles(
+                    "KRW-BTC",
+                    unit_minutes=240,
+                    start_utc=start,
+                    end_utc=start + timedelta(minutes=240),
+                    bucket=rate_limits.public_rest,
+                    transport=None,
+                )
+            )
+
+    def test_transport_factory_returns_real_async_http_transport(self) -> None:
+        """The un-patched factory must return a real `httpx.AsyncHTTPTransport`
+        so the seam actually opens sockets in production (not a mock)."""
+        from bithumb_bot.cli.handlers.research_collect_candles import (
+            _make_public_rest_transport,
+        )
+
+        transport = _make_public_rest_transport()
+        try:
+            assert isinstance(transport, httpx.AsyncHTTPTransport)
+        finally:
+            import asyncio
+
+            asyncio.run(transport.aclose())
