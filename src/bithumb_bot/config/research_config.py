@@ -18,6 +18,7 @@ TOML shape:
     warmup_candles = 1200
     unit_minutes = 240
     market = "KRW-BTC"
+    hysteresis_bps = "75"
 
     [execution]
     slippage_bps_per_side = "50"
@@ -60,6 +61,7 @@ _REQUIRED_STRATEGY_KEYS = (
     "warmup_candles",
     "unit_minutes",
     "market",
+    "hysteresis_bps",
 )
 _REQUIRED_EXECUTION_KEYS = (
     "slippage_bps_per_side",
@@ -178,6 +180,9 @@ def load_research_config(path: Path) -> BacktestConfig:
         "execution", "simulation_quantity_quantum", exe["simulation_quantity_quantum"]
     )
 
+    hysteresis_bps = _require_str_decimal(
+        "strategy", "hysteresis_bps", strat["hysteresis_bps"]
+    )
     strategy = BaselineStrategyConfig(
         rule_id=_require_str("strategy", "rule_id", strat["rule_id"]),  # type: ignore[arg-type]
         ma_type=_require_str("strategy", "ma_type", strat["ma_type"]),  # type: ignore[arg-type]
@@ -191,6 +196,7 @@ def load_research_config(path: Path) -> BacktestConfig:
             "strategy", "unit_minutes", strat["unit_minutes"]
         ),
         market=_require_str("strategy", "market", strat["market"]),
+        hysteresis_bps=hysteresis_bps,
     )
 
     execution = ExecutionConfig(

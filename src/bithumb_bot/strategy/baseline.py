@@ -1,4 +1,4 @@
-"""Pure ``price_over_sma`` baseline signal generator.
+"""Pure ``price_over_sma`` baseline signal generator with cost-aware hysteresis.
 
 Called with a contiguous, strictly-ascending sequence of completed
 :class:`~bithumb_bot.market_data.candles.Candle` values and a
@@ -16,15 +16,29 @@ Determinism / no-look-ahead invariants (must all hold):
    future candles never mutates past output.
 3. Two invocations with identical inputs return equal tuples.
 
-Rule (Gate-2 frozen, 2026-09-09):
+Rule (engineering research candidate; Gate 2 unfrozen):
 
 * Compute the arithmetic SMA of the most recent ``lookback_candles``
   closes, including the current completed candle.
-* LONG iff ``close_t > SMA_t``. CASH otherwise. Equality is CASH.
+* Let ``h = config.hysteresis_bps`` (Decimal, ``0 <= h < 10000``).
+  The band is ``[SMA * (1 - h/10000), SMA * (1 + h/10000)]``.
+* State transitions (initial state is ``CASH``):
+
+    CASH -> LONG   iff   close > SMA * (1 + h / 10000)
+    LONG -> CASH   iff   close < SMA * (1 - h / 10000)
+
+  Otherwise (including equality at either boundary) the current state
+  is retained. Equal-hysteresis at zero (``h = 0``) collapses the
+  band to the SMA itself — equality still retains the current state,
+  which differs from an earlier zero-width crossover that snapped to
+  CASH on equality.
 
 To keep the comparison exact and avoid any Decimal-division precision
-worry, the rule is evaluated as ``close_t * lookback > sum_of_closes``
-— algebraically identical, entirely integer/Decimal, no rounding.
+worry, each boundary is evaluated as an integer/Decimal multiplication:
+
+    Entry:  close * lookback * 10000  >  running_sum * (10000 + h)
+    Exit:   close * lookback * 10000  <  running_sum * (10000 - h)
+
 The ``sma_value`` on the emitted signal is only computed on the
 candles where a transition actually fires, so the reported SMA is
 correct without paying the division cost every candle.
@@ -44,6 +58,11 @@ from bithumb_bot.strategy.config import BaselineStrategyConfig
 TargetState = Literal["LONG", "CASH"]
 
 _INITIAL_STATE: TargetState = "CASH"
+
+# Basis-point denominator used by the exact-comparison form of the
+# hysteresis band. 1 bp == 1 / 10_000; the rule multiplies out the
+# fraction so no Decimal division touches the transition check.
+_BPS_DENOMINATOR: Decimal = Decimal("10000")
 
 
 @dataclass(frozen=True)
@@ -155,6 +174,9 @@ def generate_signals(
     lookback = config.lookback_candles
     step = timedelta(minutes=config.unit_minutes)
     lookback_d = Decimal(lookback)
+    hysteresis_bps = config.hysteresis_bps
+    upper_factor = _BPS_DENOMINATOR + hysteresis_bps  # 10000 + h
+    lower_factor = _BPS_DENOMINATOR - hysteresis_bps  # 10000 - h
 
     signals: list[StrategySignal] = []
     current_state: TargetState = _INITIAL_STATE
@@ -172,21 +194,29 @@ def generate_signals(
             continue
 
         close_value = candle.close.value
-        # Exact comparison — no division: close > sum/lookback ⇔
-        # close * lookback > sum (works because lookback > 0).
-        # Equality maps to CASH per the frozen spec.
-        rule_state: TargetState = (
-            "LONG" if close_value * lookback_d > running_sum else "CASH"
-        )
+        # Exact-integer form of the band comparison — no division:
+        #   Entry: close * lookback * 10000 > sum * (10000 + h)
+        #   Exit:  close * lookback * 10000 < sum * (10000 - h)
+        # Equality at either boundary retains the current state.
+        scaled_close = close_value * lookback_d * _BPS_DENOMINATOR
 
-        if rule_state == current_state:
-            # No transition (includes: first evaluable candle with
-            # rule=CASH matching the implicit initial CASH state).
+        if current_state == "CASH":
+            if scaled_close > running_sum * upper_factor:
+                new_state: TargetState = "LONG"
+            else:
+                new_state = "CASH"
+        else:  # LONG
+            if scaled_close < running_sum * lower_factor:
+                new_state = "CASH"
+            else:
+                new_state = "LONG"
+
+        if new_state == current_state:
             continue
 
         signals.append(
             StrategySignal(
-                target_state=rule_state,
+                target_state=new_state,
                 signal_ts_utc=candle.open_time_utc + step,
                 source_open_time_utc=candle.open_time_utc,
                 unit_minutes=config.unit_minutes,
@@ -195,7 +225,7 @@ def generate_signals(
                 lookback_candles=lookback,
             )
         )
-        current_state = rule_state
+        current_state = new_state
 
     return tuple(signals)
 

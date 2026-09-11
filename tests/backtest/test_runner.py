@@ -144,6 +144,7 @@ def _strategy_cfg(lookback: int = 3) -> BaselineStrategyConfig:
         warmup_candles=lookback,
         unit_minutes=UNIT,
         market="KRW-BTC",
+        hysteresis_bps=Decimal("0"),
     )
 
 
@@ -683,6 +684,7 @@ class TestConfigDiscipline:
                 warmup_candles=3,
                 unit_minutes=UNIT,
                 market="KRW-ETH",  # mismatch
+                hysteresis_bps=Decimal("0"),
             ),
             execution=_exec_cfg(),
         )

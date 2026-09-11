@@ -121,10 +121,14 @@ def _write_config(
     drop_key: str | None = None,
     starting_cash_krw: str = "100000",
     max_notional_krw: str = "100000",
+    hysteresis_bps: str = "0",
 ) -> Path:
     # Defaults sit at the Gate-1 provisional engineering notional
     # (100_000 KRW) — the handler refuses any TOML value above it
     # pre-Gate-2. Tests that need a violation override the fields.
+    # ``hysteresis_bps="0"`` preserves the pre-hysteresis semantics of
+    # existing scenarios (no band); tests that need the 75-bp band
+    # override the value.
     body = f"""\
 [backtest]
 starting_cash_krw = "{starting_cash_krw}"
@@ -138,6 +142,7 @@ lookback_candles = 3
 warmup_candles = 3
 unit_minutes = 240
 market = "KRW-BTC"
+hysteresis_bps = "{hysteresis_bps}"
 
 [execution]
 slippage_bps_per_side = "50"
@@ -237,6 +242,8 @@ class TestBacktestHappyPath:
         # Execution assumption carried explicitly.
         assert parsed["execution"]["allow_provisional_fee_model"] is True
         assert parsed["execution"]["simulation_quantity_quantum"] == "0.00000001"
+        # Strategy carries the hysteresis band width used for the run.
+        assert parsed["strategy"]["hysteresis_bps"] == "0"
 
     def test_report_bytes_deterministic(
         self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -744,6 +751,134 @@ class TestReportPersistedAuditFields:
         est_liq = Decimal(perf["estimated_final_liquidation_fee_krw"])
         expected = (end_nl + fees + est_liq) / start - Decimal("1")
         assert Decimal(perf["fee_addback_return"]) == expected
+
+
+class TestHysteresisFieldPlumbing:
+    """`hysteresis_bps` flows TOML → config → report and rejects bad input."""
+
+    def test_report_records_hysteresis_bps_from_toml(
+        self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dataset = _write_dataset(tmp_path)
+        snapshot = _write_snapshot(tmp_path)
+        config = _write_config(tmp_path, hysteresis_bps="75")
+        out = tmp_path / "report.json"
+        rc = main(
+            [
+                "research",
+                "backtest",
+                "--dataset",
+                str(dataset),
+                "--snapshot",
+                str(snapshot),
+                "--config",
+                str(config),
+                "--out",
+                str(out),
+            ]
+        )
+        assert rc == 0, capsys.readouterr()
+        parsed = json.loads(out.read_text(encoding="utf-8"))
+        assert parsed["strategy"]["hysteresis_bps"] == "75"
+
+    def test_loader_refuses_missing_hysteresis_bps(
+        self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dataset = _write_dataset(tmp_path)
+        snapshot = _write_snapshot(tmp_path)
+        # Drop the ``hysteresis_bps`` line.
+        config = _write_config(tmp_path, drop_key="hysteresis_bps")
+        rc = main(
+            [
+                "research",
+                "backtest",
+                "--dataset",
+                str(dataset),
+                "--snapshot",
+                str(snapshot),
+                "--config",
+                str(config),
+                "--out",
+                str(tmp_path / "report.json"),
+            ]
+        )
+        assert rc != 0
+        err = capsys.readouterr().err
+        assert "config refused" in err
+        assert "hysteresis_bps" in err
+
+    def test_loader_requires_decimal_string_not_float_literal(
+        self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dataset = _write_dataset(tmp_path)
+        snapshot = _write_snapshot(tmp_path)
+        # Author `hysteresis_bps = 75.0` (a TOML float, not a string).
+        config = tmp_path / "backtest.toml"
+        config.write_text(
+            """\
+[backtest]
+starting_cash_krw = "100000"
+target_sleeve_fraction = "1.0"
+protective_stop_fraction = "0.10"
+
+[strategy]
+rule_id = "price_over_sma"
+ma_type = "SMA"
+lookback_candles = 3
+warmup_candles = 3
+unit_minutes = 240
+market = "KRW-BTC"
+hysteresis_bps = 75.0
+
+[execution]
+slippage_bps_per_side = "50"
+max_notional_krw = "100000"
+allow_provisional_fee_model = true
+simulation_quantity_quantum = "0.00000001"
+""",
+            encoding="utf-8",
+        )
+        rc = main(
+            [
+                "research",
+                "backtest",
+                "--dataset",
+                str(dataset),
+                "--snapshot",
+                str(snapshot),
+                "--config",
+                str(config),
+                "--out",
+                str(tmp_path / "report.json"),
+            ]
+        )
+        assert rc != 0
+        err = capsys.readouterr().err
+        assert "hysteresis_bps" in err
+
+    def test_loader_refuses_negative_and_ge_10000(
+        self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dataset = _write_dataset(tmp_path)
+        snapshot = _write_snapshot(tmp_path)
+        for bad in ("-1", "10000", "50000"):
+            config = _write_config(tmp_path, hysteresis_bps=bad)
+            rc = main(
+                [
+                    "research",
+                    "backtest",
+                    "--dataset",
+                    str(dataset),
+                    "--snapshot",
+                    str(snapshot),
+                    "--config",
+                    str(config),
+                    "--out",
+                    str(tmp_path / f"report_{bad}.json"),
+                ]
+            )
+            assert rc != 0, f"hysteresis_bps={bad!r} was unexpectedly accepted"
+            capsys.readouterr()  # drain
 
 
 class TestFixtureSidecarStableAcrossPlatforms:

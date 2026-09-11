@@ -157,6 +157,7 @@ def _cfg(
             warmup_candles=lookback,
             unit_minutes=UNIT,
             market="KRW-BTC",
+            hysteresis_bps=Decimal("0"),
         ),
         execution=ExecutionConfig(
             slippage_bps_per_side=Decimal("50"),

@@ -307,6 +307,7 @@ class TestExecutableCompatibility:
             warmup_candles=3,
             unit_minutes=240,
             market="KRW-BTC",
+            hysteresis_bps=Decimal("0"),
         )
         backtest_cfg = BacktestConfig(
             starting_cash_krw=Money(Decimal("10_000_000")),
