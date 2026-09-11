@@ -199,7 +199,7 @@ class TestFlatCashOnlyCurve:
         assert report.annualized_volatility == Decimal("0")
         assert report.annualized_sharpe is None
         # No closed trades.
-        assert report.trade_count == 0
+        assert report.closed_trade_count == 0
         assert report.closed_trade_win_rate is None
         assert report.average_holding_period_hours is None
 
@@ -303,7 +303,7 @@ class TestOneProfitableCompletedTrade:
 
         report = evaluate_backtest(_dataset(candles), snapshot, cfg, result)
         assert report.evaluation_invalid_reason is None
-        assert report.trade_count == 1
+        assert report.closed_trade_count == 1
         assert report.closed_trade_win_rate == Decimal("1")
         # net_return should be positive.
         assert report.strategy_net_return is not None
@@ -338,7 +338,7 @@ class TestOneLosingCompletedTrade:
         assert result.invalid_reason is None
         assert len(result.entries) == 2
         report = evaluate_backtest(_dataset(candles), snapshot, cfg, result)
-        assert report.trade_count == 1
+        assert report.closed_trade_count == 1
         assert report.closed_trade_win_rate == Decimal("0")
         assert report.strategy_net_return is not None
         assert report.strategy_net_return < Decimal("0")
@@ -370,7 +370,7 @@ class TestOpenPositionAtDatasetEnd:
         assert len(result.entries) == 1
         assert result.final_position_qty.value > 0
         report = evaluate_backtest(_dataset(candles), snapshot, cfg, result)
-        assert report.trade_count == 0
+        assert report.closed_trade_count == 0
         assert report.closed_trade_win_rate is None
         assert report.average_holding_period_hours is None
         assert report.open_position_qty.value > 0
@@ -606,7 +606,7 @@ class TestInvalidBacktestRemainsInvalid:
         # Headline metrics all None.
         for name in (
             "strategy_net_return",
-            "gross_before_fees_after_slippage_return",
+            "fee_addback_return",
             "max_drawdown_fraction",
             "annualized_volatility",
             "annualized_sharpe",
@@ -622,7 +622,11 @@ class TestInvalidBacktestRemainsInvalid:
             assert getattr(report, name) is None, f"{name} must be None on invalid source"
         # Diagnostic accounting still populated.
         assert report.total_actual_fees_krw.value >= Decimal("0")
-        assert report.trade_count >= 0
+        assert report.closed_trade_count >= 0
+        assert report.ledger_entry_count == len(result.entries)
+        assert report.position_entry_count == sum(
+            1 for e in result.entries if e.side == "buy"
+        )
 
     def test_insufficient_candles_after_warmup_is_invalid(self) -> None:
         # lookback=3 → need >= 4 candles. Give 3 → invalid.

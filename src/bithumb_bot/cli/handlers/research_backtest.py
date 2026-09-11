@@ -10,19 +10,36 @@ Sequence (fail-closed at every step):
 4. Load the research config via ``load_research_config`` — every
    backtest / strategy / execution field is REQUIRED; a missing key
    is a fail-closed refusal.
-5. Check research-simulation readiness with the config's actual
+5. **Engineering-smoke pre-Gate-2 caps** — the run is treated only as
+   an engineering smoke test until Gate 2 freezes
+   ``max_validated_notional_krw``. Refuse if:
+
+     * ``config.execution.max_notional_krw`` exceeds Gate 1's
+       ``provisional_engineering_notional_krw`` (an arbitrary TOML
+       cap cannot bypass the Gate 1 limit); OR
+     * the intended pre-fee order (``starting_cash *
+       target_sleeve / (1 + fee_bid)``) exceeds the provisional
+       engineering notional.
+
+6. Check research-simulation readiness with the config's actual
    ``allow_provisional_fee_model`` + ``simulation_quantity_quantum``.
    Unresolved → refuse.
-6. Run the existing chronological backtest.
-7. Run the existing performance evaluation.
-8. Serialize a canonical JSON report with a SHA-256 sidecar. Refuses
+7. Run the existing chronological backtest.
+8. Run the existing performance evaluation.
+9. Serialize a canonical JSON report with a SHA-256 sidecar. Refuses
    to overwrite (D-76 via ``guard_against_overwrite``).
 
 The report explicitly separates ``research_simulation_readiness`` from
-``live_execution_readiness``. Documented buy-`price` / sell-`market`
-support is never reported as live-order acceptance. All Decimal /
-Money / Qty values are serialized as exact strings; timestamps as
-UTC ISO-8601.
+``live_execution_readiness``, and marks the run as
+``run_purpose="engineering_smoke"`` with ``selection_eligible=false``
+and ``holdout_eligible=false`` — a green run of this handler is NEVER
+a selection-ready result. Machine-readable outputs persist the full
+trade ledger, the equity curve, any rejected/unvalidated intents,
+and audit counts (``ledger_entry_count``, ``position_entry_count``,
+``closed_trade_count``). All Decimal / Money / Qty values are
+serialized as exact strings; timestamps as UTC ISO-8601. No absolute
+filesystem paths land in the report (no Windows username, no local
+paths — inputs are identified by SHA-256 only).
 """
 
 from __future__ import annotations
@@ -37,11 +54,18 @@ from typing import Any
 
 import structlog
 
-from bithumb_bot.config.validator import validate
+from bithumb_bot.config.validator import REPO_ROOT_ENV, validate
 
 log = structlog.get_logger()
 
-_REPORT_SCHEMA_VERSION = 1
+_REPORT_SCHEMA_VERSION = 2
+
+# Pre-Gate-2 engineering-smoke identity carried on every report this
+# handler emits. Selection- / holdout-eligible reports must be
+# produced by their own future handlers, backed by frozen Gate-2
+# `max_validated_notional_krw`, calibration provenance, and the rest
+# of the Gate-2 preconditions.
+_RUN_PURPOSE_ENGINEERING_SMOKE = "engineering_smoke"
 
 
 def _decimal_str(d: Decimal) -> str:
@@ -82,14 +106,45 @@ def _serialize_value(value: Any) -> Any:
     return str(value)
 
 
+def _serialize_ledger_entry(entry: Any) -> dict[str, Any]:
+    result: dict[str, Any] = _serialize_value(asdict(entry))
+    return result
+
+
+def _serialize_equity_point(point: Any) -> dict[str, Any]:
+    result: dict[str, Any] = _serialize_value(asdict(point))
+    return result
+
+
+def _serialize_pending_intent(intent: Any) -> dict[str, Any] | None:
+    if intent is None:
+        return None
+    return {
+        "side": intent.side,
+        "source_open_time_utc": intent.source_open_time_utc.isoformat(),
+        "signal_ts_utc": intent.signal_ts_utc.isoformat(),
+        "unit_minutes": intent.unit_minutes,
+        "requested_notional_krw": (
+            _decimal_str(intent.requested_notional_krw.value)
+            if intent.requested_notional_krw is not None
+            else None
+        ),
+        "requested_qty": (
+            _decimal_str(intent.requested_qty.value)
+            if intent.requested_qty is not None
+            else None
+        ),
+    }
+
+
 def _build_report(
     *,
-    dataset_path: Path,
     dataset_bytes: bytes,
-    snapshot_path: Path,
     snapshot_bytes: bytes,
-    config_path: Path,
     config_bytes: bytes,
+    gate1_source_commit: str,
+    gate1_file_sha256: str,
+    provisional_engineering_notional_krw: Decimal,
     dataset: Any,
     snapshot: Any,
     backtest_config: Any,
@@ -103,13 +158,28 @@ def _build_report(
     report: dict[str, Any] = {
         "schema_version": _REPORT_SCHEMA_VERSION,
         "generated_at_utc": generated_at_utc,
+        # Engineering-smoke identity (Section 1 of the patch): pre-Gate-2,
+        # every report from this handler is smoke-only, never selection-
+        # eligible, never holdout-eligible. A future selection/holdout
+        # handler will emit distinct values — validators can pin these.
+        "run_purpose": _RUN_PURPOSE_ENGINEERING_SMOKE,
+        "selection_eligible": False,
+        "holdout_eligible": False,
         "inputs": {
-            "dataset_path": str(dataset_path),
             "dataset_sha256": sha256_hex(dataset_bytes),
-            "snapshot_path": str(snapshot_path),
             "snapshot_sha256": sha256_hex(snapshot_bytes),
-            "config_path": str(config_path),
             "config_sha256": sha256_hex(config_bytes),
+        },
+        "provenance": {
+            # Reproducible code-version identifier — Gate 1's
+            # `source_commit` names the frozen decision register
+            # commit; combined with the config/snapshot/dataset SHA-256
+            # attestations above, this is enough to rebuild the run.
+            "gate1_source_commit": gate1_source_commit,
+            "gate1_file_sha256": gate1_file_sha256,
+            "provisional_engineering_notional_krw": _decimal_str(
+                provisional_engineering_notional_krw
+            ),
         },
         "dataset": {
             "market": dataset.market,
@@ -193,15 +263,25 @@ def _build_report(
             "used_provisional_fee_model": (
                 backtest_result.used_provisional_fee_model
             ),
-            "trade_count": len(
-                [e for e in backtest_result.entries if e.side == "buy"]
+            "ledger_entry_count": len(backtest_result.entries),
+            "position_entry_count": sum(
+                1 for e in backtest_result.entries if e.side == "buy"
             ),
+            "closed_trade_count": performance.closed_trade_count,
+            "signals_generated": backtest_result.signals_generated,
             "final_cash_krw": _decimal_str(
                 backtest_result.final_cash_krw.value
             ),
             "final_position_qty": _decimal_str(
                 backtest_result.final_position_qty.value
             ),
+            "pending_intent": _serialize_pending_intent(
+                backtest_result.pending_intent
+            ),
+            "pending_intent_count": (
+                1 if backtest_result.pending_intent is not None else 0
+            ),
+            "stopped_out_lockout": backtest_result.stopped_out_lockout,
             "processed_first_open_utc": (
                 backtest_result.processed_first_open_utc.isoformat()
                 if backtest_result.processed_first_open_utc
@@ -219,6 +299,16 @@ def _build_report(
             "evaluation_refusal_code": performance.evaluation_refusal_code,
             "benchmark_invalid_reason": performance.benchmark_invalid_reason,
             "benchmark_refusal_code": performance.benchmark_refusal_code,
+            "evaluation_first_open_utc": (
+                performance.evaluation_first_open_utc.isoformat()
+                if performance.evaluation_first_open_utc
+                else None
+            ),
+            "evaluation_last_open_utc": (
+                performance.evaluation_last_open_utc.isoformat()
+                if performance.evaluation_last_open_utc
+                else None
+            ),
             "starting_equity_krw": _serialize_value(
                 performance.starting_equity_krw
             ),
@@ -231,8 +321,8 @@ def _build_report(
             "strategy_net_return": _serialize_value(
                 performance.strategy_net_return
             ),
-            "gross_before_fees_after_slippage_return": _serialize_value(
-                performance.gross_before_fees_after_slippage_return
+            "fee_addback_return": _serialize_value(
+                performance.fee_addback_return
             ),
             "max_drawdown_fraction": _serialize_value(
                 performance.max_drawdown_fraction
@@ -260,14 +350,40 @@ def _build_report(
             "total_modeled_slippage_krw": _serialize_value(
                 performance.total_modeled_slippage_krw
             ),
-            "trade_count": performance.trade_count,
+            "estimated_final_liquidation_fee_krw": _serialize_value(
+                performance.estimated_final_liquidation_fee_krw
+            ),
+            "ledger_entry_count": performance.ledger_entry_count,
+            "position_entry_count": performance.position_entry_count,
+            "closed_trade_count": performance.closed_trade_count,
+            "open_position_qty": _serialize_value(performance.open_position_qty),
+            "pending_intent_count": performance.pending_intent_count,
+            "refused_run_count": performance.refused_run_count,
+            "used_provisional_fee_model": performance.used_provisional_fee_model,
+            "periods_per_year": performance.periods_per_year,
+            "risk_free_rate": _serialize_value(performance.risk_free_rate),
         },
+        # Full trade ledger (buys + sells, in order). Serialized here
+        # rather than nested under `performance` so downstream tools
+        # can read it without parsing the whole report.
+        "ledger": [
+            _serialize_ledger_entry(entry)
+            for entry in performance.entries
+        ],
+        # Full equity curve (post-warm-up window when valid, partial-
+        # path diagnostic curve when the source refused).
+        "equity_curve": [
+            _serialize_equity_point(point)
+            for point in performance.equity_curve
+        ],
     }
     return report
 
 
 def handler(args: argparse.Namespace) -> int:
     """Entry point for ``bt research backtest``."""
+    import os
+
     _result = validate(("research", "backtest"))
     if not _result.ok:
         print(
@@ -298,6 +414,7 @@ def handler(args: argparse.Namespace) -> int:
     from bithumb_bot.artifact.timestamps import utc_now
     from bithumb_bot.backtest.runner import run_backtest
     from bithumb_bot.bithumb_spec.snapshot import load_snapshot
+    from bithumb_bot.config.gate_loader import load_gate1
     from bithumb_bot.config.research_config import (
         ResearchConfigError,
         load_research_config,
@@ -314,6 +431,20 @@ def handler(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(
             f"bt research backtest: refuse to overwrite ({type(exc).__name__}): {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Load Gate 1 — the validator has already confirmed it exists and
+    # is frozen; we reload here (same `load_gate1`) to obtain the
+    # frozen provisional cap and provenance stamps for the report.
+    repo_root = Path(os.environ.get(REPO_ROOT_ENV) or Path.cwd())
+    gate1_path = repo_root / "config" / "decisions" / "gate1.toml"
+    try:
+        gate1, gate1_sha256 = load_gate1(gate1_path)
+    except Exception as exc:
+        print(
+            f"bt research backtest: gate1 refused ({type(exc).__name__}): {exc}",
             file=sys.stderr,
         )
         return 1
@@ -354,6 +485,53 @@ def handler(args: argparse.Namespace) -> int:
         return 1
     config_bytes = config_path.read_bytes()
 
+    # -------------------------------------------------------------------
+    # Engineering-smoke cap enforcement (pre-Gate-2). The Gate-2 value
+    # `max_validated_notional_krw` is deferred; until it freezes, the
+    # only cap this handler recognises is the frozen Gate-1
+    # `provisional_engineering_notional_krw`. An arbitrary TOML value
+    # in `[execution] max_notional_krw` cannot bypass it.
+    # -------------------------------------------------------------------
+    provisional_cap = gate1.provisional_engineering_notional_krw
+    if gate1.max_validated_notional_krw is not None:
+        # If Gate 2 has actually frozen the cap, this handler is still
+        # engineering-smoke-only; refuse rather than silently promoting.
+        print(
+            "bt research backtest: refusal: Gate 2 has frozen "
+            "max_validated_notional_krw; strategy evaluation requires a "
+            "distinct selection handler with calibration provenance "
+            "(missing: gate2_selection_handler).",
+            file=sys.stderr,
+        )
+        return 1
+    configured_cap = backtest_config.execution.max_notional_krw.value
+    if configured_cap > provisional_cap:
+        print(
+            f"bt research backtest: refusal: engineering-smoke "
+            f"max_notional_krw={_decimal_str(configured_cap)} exceeds "
+            f"Gate 1 provisional_engineering_notional_krw="
+            f"{_decimal_str(provisional_cap)}. Pre-Gate-2 runs cannot "
+            "raise the cap by TOML (missing: gate2_validated_cap).",
+            file=sys.stderr,
+        )
+        return 1
+    fee_bid = snapshot.fee_rates.bid
+    target_debit = (
+        backtest_config.starting_cash_krw.value
+        * backtest_config.target_sleeve_fraction
+    )
+    intended_pre_fee = target_debit / (Decimal("1") + fee_bid)
+    if intended_pre_fee > provisional_cap:
+        print(
+            f"bt research backtest: refusal: intended pre-fee order "
+            f"{_decimal_str(intended_pre_fee)} exceeds Gate 1 "
+            f"provisional_engineering_notional_krw="
+            f"{_decimal_str(provisional_cap)}. Reduce starting_cash_krw or "
+            "target_sleeve_fraction (missing: gate2_validated_cap).",
+            file=sys.stderr,
+        )
+        return 1
+
     readiness = check_execution_readiness(
         snapshot,
         allow_provisional_fee_model=(
@@ -386,12 +564,12 @@ def handler(args: argparse.Namespace) -> int:
 
     generated_at = utc_now().isoformat(timespec="seconds").replace("+00:00", "Z")
     report = _build_report(
-        dataset_path=dataset_path,
         dataset_bytes=dataset_bytes,
-        snapshot_path=snapshot_path,
         snapshot_bytes=snapshot_bytes,
-        config_path=config_path,
         config_bytes=config_bytes,
+        gate1_source_commit=gate1.source_commit,
+        gate1_file_sha256=gate1_sha256,
+        provisional_engineering_notional_krw=provisional_cap,
         dataset=dataset,
         snapshot=snapshot,
         backtest_config=backtest_config,
@@ -414,6 +592,9 @@ def handler(args: argparse.Namespace) -> int:
 
     sha_prefix = sha256_hex(out_path.read_bytes())[:12]
     print(f"report:                          {out_path}")
+    print(f"run_purpose:                     {_RUN_PURPOSE_ENGINEERING_SMOKE}")
+    print("selection_eligible:              False")
+    print("holdout_eligible:                 False")
     print(
         f"research_simulation_readiness:   "
         f"{readiness.research_simulation_readiness}"
@@ -426,7 +607,18 @@ def handler(args: argparse.Namespace) -> int:
         f"backtest_valid:                  "
         f"{'yes' if backtest_result.invalid_reason is None else 'no'}"
     )
-    print(f"trade_count:                     {report['backtest']['trade_count']}")
+    print(
+        f"position_entry_count:            "
+        f"{report['backtest']['position_entry_count']}"
+    )
+    print(
+        f"closed_trade_count:              "
+        f"{report['backtest']['closed_trade_count']}"
+    )
+    print(
+        f"ledger_entry_count:              "
+        f"{report['backtest']['ledger_entry_count']}"
+    )
     print(f"report_sha256[:12]:              {sha_prefix}")
     return 0
 

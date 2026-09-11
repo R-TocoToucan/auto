@@ -175,7 +175,13 @@ class PerformanceReport:
     total_actual_fees_krw: Money
     total_modeled_slippage_krw: Money
     estimated_final_liquidation_fee_krw: Money
-    trade_count: int
+    # Distinct trade-count semantics (see docstring):
+    #   ledger_entry_count    — all entries (buys + sells).
+    #   position_entry_count  — number of filled BUY entries.
+    #   closed_trade_count    — number of matched buy/sell pairs.
+    ledger_entry_count: int
+    position_entry_count: int
+    closed_trade_count: int
     open_position_qty: Qty
     pending_intent_count: int
     refused_run_count: int
@@ -187,7 +193,14 @@ class PerformanceReport:
     ending_mark_to_market_equity_krw: Money | None
     ending_net_liquidation_equity_krw: Money | None
     strategy_net_return: Decimal | None
-    gross_before_fees_after_slippage_return: Decimal | None
+    # Renamed from ``gross_before_fees_after_slippage_return`` (see
+    # module docstring / patch note). This is an accounting fee
+    # add-back estimate: end-net-liq + total_actual_fees_krw +
+    # estimated_final_liquidation_fee_krw, divided by starting equity.
+    # It is NOT a true zero-fee counterfactual rerun — removing fees
+    # would change subsequent position sizing, and no zero-fee engine
+    # is implemented here.
+    fee_addback_return: Decimal | None
     max_drawdown_fraction: Decimal | None
     annualized_volatility: Decimal | None
     annualized_sharpe: Decimal | None
@@ -699,7 +712,7 @@ def evaluate_backtest(
             backtest_result=backtest_result,
             equity_curve=(),
             actual_fees=_sum_fees(entries),
-            trade_count=0,
+            closed_trade_count=0,
             open_position_qty=backtest_result.final_position_qty,
         )
     try:
@@ -715,7 +728,7 @@ def evaluate_backtest(
             backtest_result=backtest_result,
             equity_curve=(),
             actual_fees=_sum_fees(entries),
-            trade_count=0,
+            closed_trade_count=0,
             open_position_qty=backtest_result.final_position_qty,
         )
 
@@ -744,7 +757,7 @@ def evaluate_backtest(
             backtest_result=backtest_result,
             equity_curve=(),
             actual_fees=_sum_fees(entries),
-            trade_count=len(closed_pairs),
+            closed_trade_count=len(closed_pairs),
             open_position_qty=backtest_result.final_position_qty,
         )
 
@@ -771,7 +784,7 @@ def evaluate_backtest(
             backtest_result=backtest_result,
             equity_curve=(),
             actual_fees=_sum_fees(entries),
-            trade_count=len(closed_pairs),
+            closed_trade_count=len(closed_pairs),
             open_position_qty=backtest_result.final_position_qty,
         )
 
@@ -793,7 +806,7 @@ def evaluate_backtest(
             backtest_result=backtest_result,
             equity_curve=tuple(full_curve),
             actual_fees=_sum_fees(entries),
-            trade_count=len(closed_pairs),
+            closed_trade_count=len(closed_pairs),
             open_position_qty=backtest_result.final_position_qty,
             processed_first=processed_first,
             processed_last=processed_last,
@@ -833,7 +846,9 @@ def evaluate_backtest(
                 if evaluation_curve
                 else _ZERO_MONEY
             ),
-            trade_count=len(closed_pairs),
+            ledger_entry_count=len(entries),
+            position_entry_count=sum(1 for e in entries if e.side == "buy"),
+            closed_trade_count=len(closed_pairs),
             open_position_qty=backtest_result.final_position_qty,
             pending_intent_count=1 if backtest_result.pending_intent else 0,
             refused_run_count=1,
@@ -843,7 +858,7 @@ def evaluate_backtest(
             ending_mark_to_market_equity_krw=None,
             ending_net_liquidation_equity_krw=None,
             strategy_net_return=None,
-            gross_before_fees_after_slippage_return=None,
+            fee_addback_return=None,
             max_drawdown_fraction=None,
             annualized_volatility=None,
             annualized_sharpe=None,
@@ -864,12 +879,16 @@ def evaluate_backtest(
     strategy_net_return = (
         ending_net_liq.value / starting_equity.value - _ONE
     )
+    # `fee_addback_return`: accounting estimate that adds recorded
+    # fees back to final net equity. Documented as an add-back, not a
+    # zero-fee counterfactual — removing fees would change subsequent
+    # position sizing, and no zero-fee engine is implemented.
     fee_addback_end = (
         ending_net_liq.value
         + total_actual_fees
         + estimated_final_liq_fee.value
     )
-    gross_before_fees_after_slippage_return = (
+    fee_addback_return = (
         fee_addback_end / starting_equity.value - _ONE
     )
 
@@ -912,7 +931,9 @@ def evaluate_backtest(
         total_actual_fees_krw=Money(total_actual_fees),
         total_modeled_slippage_krw=Money(total_modeled_slippage),
         estimated_final_liquidation_fee_krw=estimated_final_liq_fee,
-        trade_count=len(closed_pairs),
+        ledger_entry_count=len(entries),
+        position_entry_count=sum(1 for e in entries if e.side == "buy"),
+        closed_trade_count=len(closed_pairs),
         open_position_qty=backtest_result.final_position_qty,
         pending_intent_count=1 if backtest_result.pending_intent else 0,
         refused_run_count=0,
@@ -922,7 +943,7 @@ def evaluate_backtest(
         ending_mark_to_market_equity_krw=ending_mtm,
         ending_net_liquidation_equity_krw=ending_net_liq,
         strategy_net_return=strategy_net_return,
-        gross_before_fees_after_slippage_return=gross_before_fees_after_slippage_return,
+        fee_addback_return=fee_addback_return,
         max_drawdown_fraction=max_dd,
         annualized_volatility=ann_vol,
         annualized_sharpe=sharpe,
@@ -953,12 +974,13 @@ def _refused_report(
     backtest_result: BacktestResult,
     equity_curve: tuple[EquityPoint, ...],
     actual_fees: Decimal,
-    trade_count: int,
+    closed_trade_count: int,
     open_position_qty: Qty,
     processed_first: datetime | None = None,
     processed_last: datetime | None = None,
 ) -> PerformanceReport:
     """Build a fail-closed report with all headline metrics None."""
+    entries = backtest_result.entries
     return PerformanceReport(
         source_invalid_reason=source_invalid_reason,
         source_refusal_code=source_refusal_code,
@@ -971,11 +993,13 @@ def _refused_report(
         evaluation_first_open_utc=None,
         evaluation_last_open_utc=None,
         equity_curve=equity_curve,
-        entries=backtest_result.entries,
+        entries=entries,
         total_actual_fees_krw=Money(actual_fees),
         total_modeled_slippage_krw=_ZERO_MONEY,
         estimated_final_liquidation_fee_krw=_ZERO_MONEY,
-        trade_count=trade_count,
+        ledger_entry_count=len(entries),
+        position_entry_count=sum(1 for e in entries if e.side == "buy"),
+        closed_trade_count=closed_trade_count,
         open_position_qty=open_position_qty,
         pending_intent_count=1 if backtest_result.pending_intent else 0,
         refused_run_count=1 if source_run_refused else 0,
@@ -985,7 +1009,7 @@ def _refused_report(
         ending_mark_to_market_equity_krw=None,
         ending_net_liquidation_equity_krw=None,
         strategy_net_return=None,
-        gross_before_fees_after_slippage_return=None,
+        fee_addback_return=None,
         max_drawdown_fraction=None,
         annualized_volatility=None,
         annualized_sharpe=None,

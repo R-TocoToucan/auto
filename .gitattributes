@@ -1,0 +1,6 @@
+# Hashed sanitized fixtures must round-trip byte-for-byte across
+# platforms so their tracked SHA-256 sidecars verify from a clean
+# `git archive` or fresh checkout. Marking them binary disables all
+# line-ending conversion (checkout, commit, and archive).
+tests/fixtures/bithumb/sanitized/**/*.json -text
+tests/fixtures/bithumb/sanitized/**/*.sha256 -text

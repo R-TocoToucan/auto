@@ -356,7 +356,9 @@ class TestExecutableCompatibility:
         assert report.evaluation_invalid_reason is None
         assert report.strategy_net_return is not None
         assert report.starting_equity_krw is not None
-        assert report.trade_count == 1  # one closed buy/sell pair
+        assert report.closed_trade_count == 1  # one closed buy/sell pair
+        assert report.position_entry_count == 1
+        assert report.ledger_entry_count == 2
 
     def test_live_readiness_stays_unresolved_after_research_run(
         self, tmp_path: Path, _validate_ok: None
