@@ -106,6 +106,20 @@ Exception surface added incrementally by phase:
                                           entirely absent while
                                           `prior_state.
                                           forward_candle_count > 0`.
+  * `PaperInputContractMismatchError`   — the paper runner's dataset
+                                          (market/unit_minutes) disagrees
+                                          with `config.strategy`'s
+                                          declared values. Raised as the
+                                          FIRST statement of
+                                          `run_paper_session`, before
+                                          `state_dir.mkdir` or any other
+                                          filesystem touch. Mirrors
+                                          `run_backtest`'s own upfront
+                                          `ValueError` on the identical
+                                          mismatch, but with a dedicated
+                                          class so the CLI handler can
+                                          format a clean refusal without
+                                          catching a bare `ValueError`.
 """
 
 from __future__ import annotations
@@ -533,6 +547,24 @@ class ObsoleteVerificationBundleError(BithumbBotError):
         self.bundle_dir = bundle_dir
 
 
+class PaperInputContractMismatchError(BithumbBotError):
+    """Raised BEFORE any state mutation when the dataset's declared
+    market or unit_minutes disagrees with config.strategy.market or
+    config.strategy.unit_minutes.
+
+    Mirrors the semantics of `run_backtest`'s upfront ValueError on
+    the same mismatch (see `bithumb_bot/backtest/runner.py` pre-flight),
+    but with a dedicated class so the CLI can format a clean refusal
+    without catching bare ValueError. The paper runner enforces this
+    upfront (before state_dir.mkdir) rather than deferring to
+    `run_backtest` because the runner performs its own state-file
+    writes and must refuse before mutating anything.
+
+    Message names the mismatched field and both sides' observed values;
+    no dataset bytes are spliced into the exception surface.
+    """
+
+
 __all__ = [
     "AmbiguousSecretsConfigurationError",
     "AuthConstructionError",
@@ -549,6 +581,7 @@ __all__ = [
     "NoNextCandleError",
     "NotionalCapExceededError",
     "ObsoleteVerificationBundleError",
+    "PaperInputContractMismatchError",
     "PaperStateDirError",
     "ProcessedPrefixMutatedError",
     "ProhibitedCredentialDetectedError",

@@ -503,3 +503,96 @@ class TestPaperRunProcessedPrefixMutationRefused:
             assert signals_path.read_bytes() == signals_before
         else:
             assert not signals_path.is_file()
+
+
+def _write_config_with_market_and_unit(
+    tmp_path: Path,
+    *,
+    market: str,
+    unit_minutes: int,
+    name: str = "config_mismatch.toml",
+) -> Path:
+    """Local variant of ``_write_config`` with an overridable
+    ``strategy.market`` / ``strategy.unit_minutes`` -- used only by the
+    D3 input-contract CLI refusal tests below. Does not modify
+    ``_write_config``, which every other test in this file depends on."""
+    body = f"""\
+[backtest]
+starting_cash_krw = "100000"
+target_sleeve_fraction = "1.0"
+protective_stop_fraction = "0.10"
+
+[strategy]
+rule_id = "price_over_sma"
+ma_type = "SMA"
+lookback_candles = {WARMUP_CANDLE_COUNT}
+warmup_candles = {WARMUP_CANDLE_COUNT}
+unit_minutes = {unit_minutes}
+market = "{market}"
+hysteresis_bps = "75"
+
+[execution]
+slippage_bps_per_side = "50"
+max_notional_krw = "100000"
+allow_provisional_fee_model = true
+simulation_quantity_quantum = "0.00000001"
+"""
+    path = tmp_path / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+class TestPaperInputContractCLIRefusal:
+    """D-no0 D3: `bt paper run` exits 1 with a clean, traceback-free
+    refusal when the dataset's declared market / unit_minutes disagrees
+    with the config's `strategy.market` / `strategy.unit_minutes`."""
+
+    def test_market_mismatch_exits_1_clean_stderr(
+        self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dataset = _write_dataset(tmp_path)  # market="KRW-BTC"
+        snapshot = _write_snapshot(tmp_path)
+        config = _write_config_with_market_and_unit(
+            tmp_path, market="KRW-ETH", unit_minutes=UNIT
+        )
+        state_dir = tmp_path / "state"
+        out = tmp_path / "report.json"
+
+        rc = _run(
+            dataset=dataset, snapshot=snapshot, config=config,
+            state_dir=state_dir, out=out,
+        )
+        assert rc == 1
+
+        err = capsys.readouterr().err
+        assert "PaperInputContractMismatchError" in err
+        assert "KRW-BTC" in err
+        assert "KRW-ETH" in err
+        assert "Traceback" not in err
+        assert not out.exists()
+        assert not (state_dir / "state.json").exists()
+
+    def test_unit_minutes_mismatch_exits_1_clean_stderr(
+        self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dataset = _write_dataset(tmp_path)  # unit_minutes=240
+        snapshot = _write_snapshot(tmp_path)
+        config = _write_config_with_market_and_unit(
+            tmp_path, market="KRW-BTC", unit_minutes=60
+        )
+        state_dir = tmp_path / "state"
+        out = tmp_path / "report.json"
+
+        rc = _run(
+            dataset=dataset, snapshot=snapshot, config=config,
+            state_dir=state_dir, out=out,
+        )
+        assert rc == 1
+
+        err = capsys.readouterr().err
+        assert "PaperInputContractMismatchError" in err
+        assert "240" in err
+        assert "60" in err
+        assert "Traceback" not in err
+        assert not out.exists()
+        assert not (state_dir / "state.json").exists()

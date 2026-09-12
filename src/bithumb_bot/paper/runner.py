@@ -82,6 +82,7 @@ from bithumb_bot.core.money import Money, Qty
 from bithumb_bot.errors import (
     FillReplayDivergenceError,
     ForwardDatasetDivergenceError,
+    PaperInputContractMismatchError,
     PaperStateDirError,
     ProcessedPrefixMutatedError,
 )
@@ -539,24 +540,29 @@ def run_paper_session(
 
     Fail-closed order:
 
-    1. ``state_dir`` must not already exist as a non-directory file
+    1. ``dataset.market`` / ``dataset.unit_minutes`` must agree with
+       ``config.strategy.market`` / ``config.strategy.unit_minutes``,
+       else :class:`~bithumb_bot.errors.PaperInputContractMismatchError`
+       — checked as the VERY FIRST statement, before any filesystem
+       touch (D3, D-no0).
+    2. ``state_dir`` must not already exist as a non-directory file
        (:class:`~bithumb_bot.errors.PaperStateDirError`).
-    2. The dataset must carry at least ``WARMUP_CANDLE_COUNT + 1``
+    3. The dataset must carry at least ``WARMUP_CANDLE_COUNT + 1``
        candles (refusal via the returned result, not an exception).
-    3. ``config.strategy.lookback_candles`` must not require more
+    4. ``config.strategy.lookback_candles`` must not require more
        pre-paper candles than ``WARMUP_CANDLE_COUNT`` provides
        (refusal via the returned result, code
        ``InsufficientPaperLookbackError``).
-    4. Every candle's close boundary must be ``<= now_utc`` — an
+    5. Every candle's close boundary must be ``<= now_utc`` — an
        "incomplete" final candle refuses the same way.
-    5. If a prior ``state.json`` exists, every resume precondition
+    6. If a prior ``state.json`` exists, every resume precondition
        (warm-up hash, ``paper_start_ts_utc``, market, unit, hysteresis
        band, config/snapshot content hashes) must match exactly, else
        :class:`~bithumb_bot.errors.ForwardDatasetDivergenceError`; then
        every previously processed forward candle's recorded fingerprint
        is re-verified against the current dataset, else
        :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError`.
-    6. A REDUCED dataset (the last ``lookback - 1`` pre-paper candles
+    7. A REDUCED dataset (the last ``lookback - 1`` pre-paper candles
        plus every forward candle) is built and handed to the
        UNMODIFIED :func:`~bithumb_bot.backtest.runner.run_backtest`
        exactly once (see module docstring). Every accounting rule —
@@ -565,11 +571,11 @@ def run_paper_session(
        min-order, notional cap, protective stop, stopped-out lockout —
        is enforced inside that single call; a domain refusal there
        propagates via the returned result, nothing is written.
-    7. The previously-recorded prefix of forward entries/signals MUST
+    8. The previously-recorded prefix of forward entries/signals MUST
        replay byte-for-byte from the freshly computed forward
        entries/signals, else
        :class:`~bithumb_bot.errors.FillReplayDivergenceError`.
-    8. Only the NEW entries/signals beyond that prefix are appended;
+    9. Only the NEW entries/signals beyond that prefix are appended;
        ``state.json`` is atomically replaced.
 
     This function never reads any environment variable and never
@@ -577,6 +583,23 @@ def run_paper_session(
     by construction (nothing in this module's import graph or body
     touches the credential-loading surface).
     """
+    # D3 (D-no0): upfront input-contract check — dataset market /
+    # unit_minutes must agree with config.strategy.market /
+    # config.strategy.unit_minutes. Mirrors run_backtest's pre-flight
+    # ValueError semantics but with a dedicated class so the CLI can
+    # format a clean refusal. Runs BEFORE state_dir.mkdir so a mismatch
+    # never touches the filesystem.
+    if dataset.market != config.strategy.market:
+        raise PaperInputContractMismatchError(
+            f"dataset.market={dataset.market!r} != config.strategy.market="
+            f"{config.strategy.market!r}"
+        )
+    if dataset.unit_minutes != config.strategy.unit_minutes:
+        raise PaperInputContractMismatchError(
+            f"dataset.unit_minutes={dataset.unit_minutes} != "
+            f"config.strategy.unit_minutes={config.strategy.unit_minutes}"
+        )
+
     if state_dir.exists() and not state_dir.is_dir():
         raise PaperStateDirError(
             f"--state-dir {state_dir!s} exists and is not a directory"

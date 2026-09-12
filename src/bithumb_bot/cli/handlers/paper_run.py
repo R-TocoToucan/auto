@@ -62,6 +62,7 @@ from bithumb_bot.core.money import Money, Qty
 from bithumb_bot.errors import (
     FillReplayDivergenceError,
     ForwardDatasetDivergenceError,
+    PaperInputContractMismatchError,
     PaperStateDirError,
     ProcessedPrefixMutatedError,
     SidecarHashMismatchError,
@@ -452,6 +453,7 @@ def handler(args: Any) -> int:
         )
     except (
         PaperStateDirError,
+        PaperInputContractMismatchError,
         ForwardDatasetDivergenceError,
         FillReplayDivergenceError,
         ProcessedPrefixMutatedError,

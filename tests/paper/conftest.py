@@ -152,6 +152,41 @@ def make_backtest_config(
     )
 
 
+def make_backtest_config_with_strategy(
+    *,
+    market: str = "KRW-BTC",
+    unit_minutes: int = UNIT,
+    hysteresis_bps: str = "75",
+    cash: str = "20000000",
+) -> BacktestConfig:
+    """Like :func:`make_backtest_config` but with an overridable
+    ``strategy.market`` / ``strategy.unit_minutes`` — used by the D3
+    input-contract tests to construct a config that intentionally
+    disagrees with a fixed ``dataset``. ``lookback_candles`` /
+    ``warmup_candles`` stay pinned at :data:`WARMUP_CANDLE_COUNT` so the
+    paper-split boundary still coincides with the production shape."""
+    strategy = BaselineStrategyConfig(
+        rule_id="price_over_sma",
+        ma_type="SMA",
+        lookback_candles=WARMUP_CANDLE_COUNT,
+        warmup_candles=WARMUP_CANDLE_COUNT,
+        unit_minutes=unit_minutes,
+        market=market,
+        hysteresis_bps=Decimal(hysteresis_bps),
+    )
+    return BacktestConfig(
+        starting_cash_krw=Money(Decimal(cash)),
+        target_sleeve_fraction=Decimal("1.0"),
+        protective_stop_fraction=Decimal("0.10"),
+        strategy=strategy,
+        execution=ExecutionConfig(
+            slippage_bps_per_side=Decimal("50"),
+            max_notional_krw=Money(Decimal("100000000")),
+            allow_provisional_fee_model=False,
+        ),
+    )
+
+
 @pytest.fixture()
 def paper_fixture() -> tuple[CandleDataset, SnapshotV1, BacktestConfig]:
     """``(dataset, snapshot, config)`` — 1200 flat warmup candles + a
