@@ -16,6 +16,7 @@ string (D-49) — ``hysteresis_bps``, ``final_cash_krw``, and
 from __future__ import annotations
 
 import json
+import os
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,10 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from bithumb_bot.artifact.canonical import canonical_bytes, sha256_hex, write_with_sidecar
 from bithumb_bot.errors import SidecarHashMismatchError
+
+#: Length of a hex-encoded SHA-256 digest — used to validate a sidecar's
+#: recorded hash column before trusting it as "the" digest.
+_SHA256_HEX_LEN = 64
 
 
 def _require_decimal_string(value: str) -> str:
@@ -90,7 +95,11 @@ def load_state(state_dir: Path) -> PaperState | None:
     if not sidecar.is_file():
         raise SidecarHashMismatchError(path)
     recorded = sidecar.read_text(encoding="utf-8").strip().split()
-    if len(recorded) < 1 or len(recorded[0]) != 64 or recorded[0] != on_disk_hex:
+    if (
+        len(recorded) < 1
+        or len(recorded[0]) != _SHA256_HEX_LEN
+        or recorded[0] != on_disk_hex
+    ):
         raise SidecarHashMismatchError(path)
     parsed: Any = json.loads(data.decode("utf-8"))
     return PaperState.model_validate(parsed)
@@ -115,8 +124,6 @@ def append_jsonl(path: Path, obj: dict[str, Any]) -> None:
     with path.open("ab") as fh:
         fh.write(line)
         fh.flush()
-        import os
-
         os.fsync(fh.fileno())
 
 

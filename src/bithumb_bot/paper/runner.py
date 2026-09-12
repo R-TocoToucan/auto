@@ -40,11 +40,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from bithumb_bot.artifact.canonical import canonical_bytes, sha256_hex
 from bithumb_bot.backtest.config import BacktestConfig
 from bithumb_bot.backtest.runner import BacktestResult, run_backtest
 from bithumb_bot.bithumb_spec.snapshot import SnapshotV1
 from bithumb_bot.core.money import Money, Qty
-from bithumb_bot.errors import ForwardDatasetDivergenceError, PaperStateDirError
+from bithumb_bot.errors import (
+    FillReplayDivergenceError,
+    ForwardDatasetDivergenceError,
+    PaperStateDirError,
+)
 from bithumb_bot.execution.ledger import LedgerEntry
 from bithumb_bot.market_data.dataset import CandleDataset
 from bithumb_bot.paper.state import PaperState, append_jsonl, load_state, read_jsonl, save_state
@@ -91,18 +96,20 @@ class PaperSessionResult:
 
 def _serialize_value(value: Any) -> Any:
     if value is None or isinstance(value, (bool, str, int)):
-        return value
-    if isinstance(value, Decimal):
-        return format(value, "f")
-    if isinstance(value, (Money, Qty)):
-        return format(value.value, "f")
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, dict):
-        return {str(k): _serialize_value(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_serialize_value(v) for v in value]
-    return str(value)
+        result: Any = value
+    elif isinstance(value, Decimal):
+        result = format(value, "f")
+    elif isinstance(value, (Money, Qty)):
+        result = format(value.value, "f")
+    elif isinstance(value, datetime):
+        result = value.isoformat()
+    elif isinstance(value, dict):
+        result = {str(k): _serialize_value(v) for k, v in value.items()}
+    elif isinstance(value, (list, tuple)):
+        result = [_serialize_value(v) for v in value]
+    else:
+        result = str(value)
+    return result
 
 
 def _serialize_ledger_entry(entry: LedgerEntry) -> dict[str, Any]:
@@ -265,8 +272,6 @@ def run_paper_session(
             )
 
     warmup_slice = dataset.candles[:WARMUP_CANDLE_COUNT]
-    from bithumb_bot.artifact.canonical import canonical_bytes, sha256_hex
-
     warmup_sha256 = sha256_hex(
         canonical_bytes([c.model_dump(mode="json") for c in warmup_slice])
     )
@@ -389,8 +394,6 @@ def run_paper_session(
 def _assert_prefix_replay(
     recomputed: list[dict[str, Any]], on_disk: list[dict[str, Any]], path: Path
 ) -> None:
-    from bithumb_bot.errors import FillReplayDivergenceError
-
     if recomputed != on_disk:
         raise FillReplayDivergenceError(
             f"replaying the engine/strategy over the recorded forward "

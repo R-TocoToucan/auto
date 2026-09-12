@@ -125,6 +125,9 @@ HANDLER_MAP: dict[tuple[str, str], HandlerFn] = {
     ("research", "backtest"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.research_backtest", "handler"
     ),
+    ("paper", "run"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.paper_run", "handler"
+    ),
     # ---- D-87 reserved verbs — every entry bound to reserved_handler ------
     ("m2", "collect-observations"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.reserved", "reserved_handler"
@@ -325,6 +328,33 @@ def _build_parser() -> argparse.ArgumentParser:
     p_research_backtest.add_argument("--snapshot", required=True)
     p_research_backtest.add_argument("--config", required=True)
     p_research_backtest.add_argument("--out", required=True)
+
+    # -- paper verb ----------------------------------------------------------
+    p_paper = verbs.add_parser(
+        "paper",
+        help=(
+            "Bounded forward paper-trading runner — public dataset in, "
+            "restart-safe audit trail + canonical report out. No "
+            "credentials, no live orders."
+        ),
+    )
+    p_paper_sub = p_paper.add_subparsers(
+        dest="subverb", metavar="<subverb>", title="paper verbs"
+    )
+    p_paper_run = p_paper_sub.add_parser(
+        "run",
+        help=(
+            "Bounded forward paper-trading runner — consumes public "
+            "dataset, writes restart-safe audit trail + canonical "
+            "report. Never loads trade credentials or calls real-order "
+            "endpoints."
+        ),
+    )
+    p_paper_run.add_argument("--dataset", required=True)
+    p_paper_run.add_argument("--snapshot", required=True)
+    p_paper_run.add_argument("--config", required=True)
+    p_paper_run.add_argument("--state-dir", required=True)
+    p_paper_run.add_argument("--out", required=True)
 
     # -- D-87 reserved verbs (added by plan 01-03-08) ---------------------
     # Every reserved subparser is labelled `RESERVED — future phase, not

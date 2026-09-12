@@ -221,6 +221,22 @@ _PHASE1: dict[tuple[str, str], CapabilityRequirements] = {
         trade_cred_prohibited=True,
         human_auth=HumanAuthRequirement.NONE,
     ),
+    # paper run — offline (public dataset only); snapshot is EVIDENCE
+    # input, same as research backtest. Mirrors research backtest's
+    # prerequisite row exactly — the paper runner requires ZERO
+    # credentials (docs/IMPLEMENTATION_SCOPE.md Section 5), so there is
+    # nothing to subtract relative to research backtest's already-NONE
+    # `cred` requirement.
+    ("paper", "run"): CapabilityRequirements(
+        gate1=True,
+        gate2=False,
+        gate3=False,
+        snapshot=SnapshotRequirement.EVIDENCE_INPUT,
+        cap=CapRequirement.NOT_REQUIRED,
+        cred=CredRequirement.NONE,
+        trade_cred_prohibited=True,
+        human_auth=HumanAuthRequirement.NONE,
+    ),
 }
 
 
