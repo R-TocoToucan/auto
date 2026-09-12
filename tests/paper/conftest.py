@@ -165,3 +165,18 @@ def paper_fixture() -> tuple[CandleDataset, SnapshotV1, BacktestConfig]:
     snapshot = make_snapshot()
     config = make_backtest_config()
     return dataset, snapshot, config
+
+
+@pytest.fixture()
+def flat_warmup_and_forward_dataset() -> tuple[CandleDataset, SnapshotV1, BacktestConfig]:
+    """``(dataset, snapshot, config)`` — pure flat throughout (warmup
+    AND the single forward candle) at the same price. No signal fires
+    anywhere (close == running SMA exactly at every index), so this is
+    the simplest possible "no forward-triggering price move" dataset —
+    used to verify the paper-start invariants (must_have truth #1)."""
+    candles = warmup_candles()
+    candles.append(flat(WARMUP_CANDLE_COUNT, "100000000"))
+    dataset = make_dataset(candles)
+    snapshot = make_snapshot()
+    config = make_backtest_config()
+    return dataset, snapshot, config

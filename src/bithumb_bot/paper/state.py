@@ -11,6 +11,14 @@ Every Decimal-bearing field on :class:`PaperState` is stored as a
 string (D-49) — ``hysteresis_bps``, ``final_cash_krw``, and
 ``final_position_qty`` round-trip exactly through JSON with no
 ``float`` in between.
+
+``schema_version`` is pinned at :data:`_CURRENT_SCHEMA_VERSION` (``2``).
+A ``state.json`` written by the pre-D-erv binary (``schema_version ==
+1``) lacks the ``paper_start_*`` invariant fields introduced by the
+warmup-isolation fix and is NOT resume-compatible: :func:`load_state`
+refuses it with :class:`~bithumb_bot.errors.ForwardDatasetDivergenceError`
+rather than silently upgrading it or letting pydantic's ``extra="forbid"``
+raise an opaque validation error.
 """
 
 from __future__ import annotations
@@ -24,11 +32,16 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from bithumb_bot.artifact.canonical import canonical_bytes, sha256_hex, write_with_sidecar
-from bithumb_bot.errors import SidecarHashMismatchError
+from bithumb_bot.errors import ForwardDatasetDivergenceError, SidecarHashMismatchError
 
 #: Length of a hex-encoded SHA-256 digest — used to validate a sidecar's
 #: recorded hash column before trusting it as "the" digest.
 _SHA256_HEX_LEN = 64
+
+#: The only ``schema_version`` :func:`load_state` accepts. Bumped from
+#: ``1`` to ``2`` by the D-erv warmup-isolation fix, which added the
+#: four ``paper_start_*`` invariant fields below.
+_CURRENT_SCHEMA_VERSION = 2
 
 
 def _require_decimal_string(value: str) -> str:
@@ -57,6 +70,18 @@ class PaperState(BaseModel):
     holdout_eligible: bool
     hysteresis_bps: str
     paper_start_ts_utc: str
+    #: Literal invariants (D-erv): the paper portfolio at
+    #: ``paper_start_ts_utc`` is ALWAYS unambiguously fresh — cash
+    #: equals ``config.starting_cash_krw``, position/realized-P&L/fees
+    #: are all zero — because the fresh-portfolio forward loop never
+    #: carries a warmup-sourced fill across the boundary (see
+    #: ``paper/runner.py``'s module docstring). Present so a mutation of
+    #: the runner that accidentally reintroduces the warmup-leak defect
+    #: has a machine-checkable contract to violate.
+    paper_start_cash_krw: str
+    paper_start_position_qty: str
+    paper_start_realized_pnl_krw: str
+    paper_start_cumulative_fees_krw: str
     warmup_first_open_utc: str
     warmup_last_open_utc: str
     warmup_candles: int
@@ -72,7 +97,15 @@ class PaperState(BaseModel):
     final_cash_krw: str
     final_position_qty: str
 
-    @field_validator("hysteresis_bps", "final_cash_krw", "final_position_qty")
+    @field_validator(
+        "hysteresis_bps",
+        "final_cash_krw",
+        "final_position_qty",
+        "paper_start_cash_krw",
+        "paper_start_position_qty",
+        "paper_start_realized_pnl_krw",
+        "paper_start_cumulative_fees_krw",
+    )
     @classmethod
     def _validate_decimal_string(cls, value: str) -> str:
         return _require_decimal_string(value)
@@ -85,6 +118,12 @@ def load_state(state_dir: Path) -> PaperState | None:
         SidecarHashMismatchError: the sidecar is missing or the
             on-disk bytes no longer match the recorded hash — the
             same tamper/corruption detection the M1 snapshot uses.
+        ForwardDatasetDivergenceError: the on-disk ``schema_version``
+            predates the D-erv warmup-isolation fix (see module
+            docstring) — the file is refused BEFORE
+            ``PaperState.model_validate`` ever sees it, so the operator
+            gets a clear message instead of an opaque pydantic
+            ``extra="forbid"`` / missing-required-field error.
     """
     path = state_dir / "state.json"
     if not path.is_file():
@@ -102,6 +141,13 @@ def load_state(state_dir: Path) -> PaperState | None:
     ):
         raise SidecarHashMismatchError(path)
     parsed: Any = json.loads(data.decode("utf-8"))
+    on_disk_schema = parsed.get("schema_version") if isinstance(parsed, dict) else None
+    if on_disk_schema != _CURRENT_SCHEMA_VERSION:
+        raise ForwardDatasetDivergenceError(
+            f"state.json schema_version={on_disk_schema!r} predates the "
+            "D-erv warmup-isolation fix — delete state.json to start a "
+            "fresh session"
+        )
     return PaperState.model_validate(parsed)
 
 

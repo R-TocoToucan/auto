@@ -3,8 +3,11 @@
 Scope-locked to Research MVP §5 of ``docs/IMPLEMENTATION_SCOPE.md``:
 consume a pre-fetched, public, immutable candle dataset; calculate
 signals only on completed candles; route hypothetical orders through
-the SAME accounting path as the backtest simulator
-(:func:`bithumb_bot.backtest.runner.run_backtest`); persist a
+the SAME accounting primitives the backtest simulator uses
+(:func:`bithumb_bot.execution.execute_intent`,
+:func:`bithumb_bot.execution.evaluate_protective_stop`), starting from
+an explicit fresh portfolio at ``paper_start_ts_utc`` so no warm-up-
+sourced signal can leak into the paper session's ledger; persist a
 restart-safe audit trail. Never loads a trade credential, never calls
 a real-order endpoint, never imports :mod:`bithumb_bot.broker`.
 

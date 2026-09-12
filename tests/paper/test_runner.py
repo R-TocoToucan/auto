@@ -1,8 +1,9 @@
 """Hand-verified tests for :func:`bithumb_bot.paper.runner.run_paper_session`.
 
-Covers hard-requirement items #1 (warmup excluded from forward P&L),
-#2 (signals use only completed candles), and #3 (fill occurs no
-earlier than the next candle).
+Covers the D-erv D1 warmup-isolation fix (a warmup-only transition
+re-emits as a forward-only trade, never a phantom sell of an unopened
+position), signals using only completed candles, and fills occurring
+no earlier than the next candle.
 """
 
 from __future__ import annotations
@@ -13,7 +14,9 @@ from pathlib import Path
 from bithumb_bot.backtest.config import BacktestConfig
 from bithumb_bot.core.money import Money
 from bithumb_bot.execution.config import ExecutionConfig
+from bithumb_bot.market_data.dataset import CandleDataset
 from bithumb_bot.paper.runner import WARMUP_CANDLE_COUNT, run_paper_session
+from bithumb_bot.paper.state import load_state
 
 from .conftest import (
     STEP,
@@ -26,8 +29,13 @@ from .conftest import (
 )
 
 
-class TestWarmupExcludedFromForwardPnl:
-    def test_warmup_sourced_entry_excluded_from_forward_activity(
+class TestWarmupSignalDoesNotLeakIntoForward:
+    """D-erv (D1): the fresh-portfolio forward loop never lets a
+    warmup-only transition carry a filled position across
+    ``paper_start_ts_utc``. See ``paper/runner.py``'s module docstring
+    and the ``_forward_only_signals`` worked trace."""
+
+    def test_warmup_sourced_long_becomes_forward_only_buy_then_sell(
         self, tmp_path: Path
     ) -> None:
         # Warmup: 1199 flat candles, then the LAST warmup candle (index
@@ -45,21 +53,45 @@ class TestWarmupExcludedFromForwardPnl:
                 "200000000",
             )
         )
-        # Forward: candle at paper_start (index 1200) is the fill candle
-        # for the warmup-sourced BUY, and stays flat (no new signal).
+        # Forward: candle at paper_start (index 1200) stays flat at the
+        # spike level (no new signal there) — the paper session's OWN
+        # fresh-CASH baseline diverges from the warmup-inherited LONG
+        # state right here, so a SYNTHETIC forward LONG transition is
+        # re-emitted at this candle (see module docstring). Index 1201
+        # (also flat) is the buy's fill candle. Index 1202 is a genuine
+        # forward-sourced CASH transition (a drop, but not so extreme
+        # that its own low would breach the protective stop below —
+        # see the config comment). Index 1203 is the sell's fill
+        # candle.
         candles.append(flat(WARMUP_CANDLE_COUNT, "200000000"))
-        # A genuine forward-sourced CASH transition (extreme drop) and
-        # its fill candle.
+        candles.append(flat(WARMUP_CANDLE_COUNT + 1, "200000000"))
         candles.append(
             make_candle(
-                WARMUP_CANDLE_COUNT + 1, "200000000", "200000000", "1", "1"
+                WARMUP_CANDLE_COUNT + 2, "200000000", "200000000", "90000000", "90000000"
             )
         )
-        candles.append(flat(WARMUP_CANDLE_COUNT + 2, "1"))
+        candles.append(flat(WARMUP_CANDLE_COUNT + 3, "90000000"))
 
         dataset = make_dataset(candles)
         snapshot = make_snapshot()
-        config = make_backtest_config()
+        # protective_stop_fraction="0.60" -> stop sits at ~40% of the
+        # buy's fill price (~80.4M), safely BELOW the drop candle's low
+        # (90M) — so the forward SELL below is driven by the genuine
+        # CASH signal, not a protective-stop trigger, isolating D1's
+        # forward-only re-emission from the (separately-tested)
+        # protective-stop path, matching
+        # ``TestFillOccursOnNextCandle``'s convention.
+        config = BacktestConfig(
+            starting_cash_krw=Money(Decimal("20000000")),
+            target_sleeve_fraction=Decimal("1.0"),
+            protective_stop_fraction=Decimal("0.60"),
+            strategy=make_strategy_config(),
+            execution=ExecutionConfig(
+                slippage_bps_per_side=Decimal("50"),
+                max_notional_krw=Money(Decimal("100000000")),
+                allow_provisional_fee_model=False,
+            ),
+        )
         now = dataset.candles[-1].open_time_utc + STEP
 
         result = run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
@@ -67,25 +99,41 @@ class TestWarmupExcludedFromForwardPnl:
         assert result.invalid_reason is None
         assert result.paper_start_ts_utc == candles[WARMUP_CANDLE_COUNT].open_time_utc
 
-        # The underlying (unfiltered) backtest sees BOTH the warmup-
-        # sourced buy and the forward-sourced sell.
-        assert result.backtest_result is not None
-        assert len(result.backtest_result.entries) == 2
-        assert result.backtest_result.entries[0].side == "buy"
-        assert result.backtest_result.entries[1].side == "sell"
-
-        # forward_entries excludes the warmup-sourced buy entirely.
+        # D1: the warmup-sourced LONG state is re-emitted as a
+        # FORWARD-only transition at paper_start (fresh CASH baseline),
+        # producing a real BUY — NOT a phantom SELL of a
+        # warmup-inherited position that was never opened in the
+        # forward ledger.
+        assert len(result.forward_entries) == 2
+        buy, sell = result.forward_entries
+        assert buy.side == "buy"
+        assert sell.side == "sell"
+        assert buy.fill_ts_utc == candles[WARMUP_CANDLE_COUNT + 1].open_time_utc
+        assert sell.fill_ts_utc == candles[WARMUP_CANDLE_COUNT + 3].open_time_utc
         assert all(
             e.source_open_time_utc >= result.paper_start_ts_utc
             for e in result.forward_entries
         )
-        assert len(result.forward_entries) == 1
-        assert result.forward_entries[0].side == "sell"
 
-        # forward_signal_count matches only the signal sourced at/after
-        # paper_start_ts_utc (the CASH transition) — the warmup-sourced
-        # LONG transition is not counted.
-        assert result.forward_signal_count == 1
+    def test_all_flat_dataset_yields_clean_paper_start(
+        self,
+        tmp_path: Path,
+        flat_warmup_and_forward_dataset: tuple[
+            CandleDataset, object, BacktestConfig
+        ],
+    ) -> None:
+        dataset, snapshot, config = flat_warmup_and_forward_dataset
+        now = dataset.candles[-1].open_time_utc + STEP
+
+        result = run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        assert result.invalid_reason is None
+        assert result.forward_entries == ()
+
+        state = load_state(tmp_path)
+        assert state is not None
+        assert state.final_cash_krw == format(config.starting_cash_krw.value, "f")
+        assert state.final_position_qty == "0"
 
 
 class TestSignalUsesOnlyCompletedCandles:
