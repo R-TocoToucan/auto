@@ -5,9 +5,9 @@ milestone_name: milestone
 current_phase: 01
 status: completed
 stopped_at: Completed 01-04-PLAN.md
-last_updated: "2026-09-11T23:51:13.010Z"
+last_updated: "2026-09-12T04:12:00.000Z"
 last_activity: 2026-09-12
-last_activity_desc: "Completed quick task 260912-cao: bounded forward paper-trading runner"
+last_activity_desc: "Completed quick task 260912-erv: paper runner correctness defect fix (D1 warmup isolation + D2 immutable-prefix)"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 Phase: 01 — COMPLETE
 Plan: 4 of 4
 Status: Phase 01 complete
-Last activity: 2026-09-12 — Completed quick task 260912-cao: bounded forward paper-trading runner
+Last activity: 2026-09-12 — Completed quick task 260912-erv: paper runner correctness defect fix (D1 warmup isolation + D2 immutable-prefix)
 
 Progress: [██████████] 100%
 
@@ -101,9 +101,10 @@ None yet.
 
 ### Quick Tasks Completed
 
-| # | Description | Date | Commit | Directory |
-|---|-------------|------|--------|-----------|
-| 260912-cao | Bounded forward paper-trading runner (price_over_sma, hysteresis_bps="75", engineering_smoke) | 2026-09-12 | 38d8a31 | [260912-cao-implement-a-bounded-forward-paper-tradin](./quick/260912-cao-implement-a-bounded-forward-paper-tradin/) |
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 260912-cao | Bounded forward paper-trading runner (price_over_sma, hysteresis_bps="75", engineering_smoke) | 2026-09-12 | 38d8a31 |  | [260912-cao-implement-a-bounded-forward-paper-tradin](./quick/260912-cao-implement-a-bounded-forward-paper-tradin/) |
+| 260912-erv | Paper runner correctness defect fix (D1 warmup isolation, D2 immutable-prefix verification) | 2026-09-12 | 5aa45d3 | Needs Review | [260912-erv-fix-two-correctness-defects-in-the-paper](./quick/260912-erv-fix-two-correctness-defects-in-the-paper/) |
 
 ## Deferred Items
 
