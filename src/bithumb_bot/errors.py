@@ -71,6 +71,20 @@ Exception surface added incrementally by phase:
                                           ``unresolved`` state. The
                                           verifier refuses to advance
                                           per D-78.
+- Quick task 260912-erv (D-erv, D2 fix):
+  * `ProcessedPrefixMutatedError`       — a paper session resume detected
+                                          that a previously processed
+                                          forward candle's SHA-256
+                                          fingerprint no longer matches
+                                          the current dataset (or the
+                                          candle is missing entirely).
+                                          Distinct from
+                                          `ForwardDatasetDivergenceError`
+                                          (invocation-level input drift)
+                                          and `FillReplayDivergenceError`
+                                          (derived fills/signals stream
+                                          diverges) — this fires strictly
+                                          on candle-CONTENT mutation.
 """
 
 from __future__ import annotations
@@ -427,6 +441,25 @@ class FillReplayDivergenceError(BithumbBotError):
     """
 
 
+class ProcessedPrefixMutatedError(BithumbBotError):
+    """Raised on resume when a previously processed forward candle no longer
+    matches its recorded per-candle SHA-256 fingerprint (or is missing from
+    the current dataset entirely).
+
+    Distinct from ForwardDatasetDivergenceError (which fires on
+    invocation-level input drift: warmup slice hash, config, snapshot,
+    market, unit, hysteresis) and from FillReplayDivergenceError (which
+    fires when the derived fills/signals stream diverges from the on-disk
+    audit trail). This exception fires strictly on CANDLE-CONTENT
+    mutation of the processed prefix, catching the case where a stale
+    mirror or manual edit rewrites a completed candle whose derived
+    signal/fill happens to coincidentally still match.
+
+    Message names the offending candle open_time_utc; no dataset bytes are
+    spliced into the exception surface.
+    """
+
+
 class ObsoleteVerificationBundleError(BithumbBotError):
     """Raised when a verification bundle uses an obsolete schema or fact set.
 
@@ -468,6 +501,7 @@ __all__ = [
     "NotionalCapExceededError",
     "ObsoleteVerificationBundleError",
     "PaperStateDirError",
+    "ProcessedPrefixMutatedError",
     "ProhibitedCredentialDetectedError",
     "PublicRestErrorResponseError",
     "PublicRestNotVerifiedError",

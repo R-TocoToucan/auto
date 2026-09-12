@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from bithumb_bot.artifact.canonical import canonical_bytes, sha256_hex, write_with_sidecar
 from bithumb_bot.errors import ForwardDatasetDivergenceError, SidecarHashMismatchError
+from bithumb_bot.market_data.candles import Candle
 
 #: Length of a hex-encoded SHA-256 digest — used to validate a sidecar's
 #: recorded hash column before trusting it as "the" digest.
@@ -194,10 +195,60 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def candle_fingerprint(candle: Candle) -> str:
+    """SHA-256 hex digest of a canonical 9-field projection of ``candle``.
+
+    D2 (D-erv): the fingerprint is the resume-time content-integrity
+    check on a previously PROCESSED forward candle — distinct from the
+    invocation-level hashes in :class:`~bithumb_bot.paper.runner.
+    _DivergenceHashes`, this one is per-candle and localizable (a
+    mismatch names the offending ``open_time_utc``).
+
+    Fields, in this exact set (``canonical_bytes`` sorts keys, so
+    dict-construction order here is not significant): ``market``,
+    ``unit_minutes``, ``open_time_utc`` (ISO-8601), ``open``, ``high``,
+    ``low``, ``close``, ``volume``, ``quote_volume``. Every price/qty
+    field is read from ``candle``'s ``Money``/``Qty`` wrapper via
+    ``format(..., "f")`` — NEVER coerced through ``float`` (D-49); the
+    fingerprint is exact-decimal-string-based end to end.
+    """
+    payload = {
+        "market": candle.market,
+        "unit_minutes": candle.unit_minutes,
+        "open_time_utc": candle.open_time_utc.isoformat(),
+        "open": format(candle.open.value, "f"),
+        "high": format(candle.high.value, "f"),
+        "low": format(candle.low.value, "f"),
+        "close": format(candle.close.value, "f"),
+        "volume": format(candle.volume.value, "f"),
+        "quote_volume": format(candle.quote_volume.value, "f"),
+    }
+    return sha256_hex(canonical_bytes(payload))
+
+
+def read_fingerprints(state_dir: Path) -> list[dict[str, str]]:
+    """Thin wrapper over ``read_jsonl(state_dir / "candle_fingerprints.jsonl")``."""
+    return read_jsonl(state_dir / "candle_fingerprints.jsonl")
+
+
+def append_fingerprint(state_dir: Path, candle: Candle) -> None:
+    """Append one ``{"open_time_utc": ..., "sha256": ...}`` line for ``candle``."""
+    append_jsonl(
+        state_dir / "candle_fingerprints.jsonl",
+        {
+            "open_time_utc": candle.open_time_utc.isoformat(),
+            "sha256": candle_fingerprint(candle),
+        },
+    )
+
+
 __all__ = [
     "PaperState",
+    "append_fingerprint",
     "append_jsonl",
+    "candle_fingerprint",
     "load_state",
+    "read_fingerprints",
     "read_jsonl",
     "save_state",
 ]

@@ -36,6 +36,11 @@ class TestRestartProducesIdenticalStateAndNoDuplicateFills:
         fills_bytes_1 = (tmp_path / "fills.jsonl").read_bytes()
         signals_path = tmp_path / "signals.jsonl"
         signals_bytes_1 = signals_path.read_bytes() if signals_path.is_file() else b""
+        fingerprints_path = tmp_path / "candle_fingerprints.jsonl"
+        assert fingerprints_path.is_file()
+        fingerprints_bytes_1 = fingerprints_path.read_bytes()
+        fingerprints_lines_1 = fingerprints_bytes_1.decode("utf-8").splitlines()
+        assert len(fingerprints_lines_1) == r1.forward_candle_count
 
         # ---- second run: identical dataset -> pure no-op --------------
         r2 = run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
@@ -48,6 +53,7 @@ class TestRestartProducesIdenticalStateAndNoDuplicateFills:
         assert (
             signals_path.read_bytes() if signals_path.is_file() else b""
         ) == signals_bytes_1
+        assert fingerprints_path.read_bytes() == fingerprints_bytes_1
 
         # ---- third run: append-extend the dataset by 5 flat candles --
         extended_candles = list(dataset.candles) + [
@@ -68,6 +74,14 @@ class TestRestartProducesIdenticalStateAndNoDuplicateFills:
         # No new signal fires on flat continuation candles -> the fills
         # ledger is unchanged (still exactly the prior bytes).
         assert fills_bytes_3 == fills_bytes_1
+
+        # candle_fingerprints.jsonl grows by exactly the 5 newly appended
+        # forward candles; the prior prefix stays byte-identical (D2).
+        fingerprints_lines_3 = (
+            fingerprints_path.read_text(encoding="utf-8").splitlines()
+        )
+        assert len(fingerprints_lines_3) == len(fingerprints_lines_1) + 5
+        assert fingerprints_lines_3[: len(fingerprints_lines_1)] == fingerprints_lines_1
 
 
 class TestDatasetFaultsFailClosed:

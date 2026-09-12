@@ -15,10 +15,10 @@ module adds:
    not yet passed relative to ``now_utc`` cannot honestly be treated
    as a completed observation, so the whole invocation refuses.
 3. A restart-safe, append-only audit trail (``state.json`` +
-   ``fills.jsonl`` + ``signals.jsonl``) that a second invocation over
-   the same (or append-extended) dataset resumes from without
-   duplicating a single line.
-4. Warmup isolation (D-erv fix): the underlying strategy's target
+   ``fills.jsonl`` + ``signals.jsonl`` + ``candle_fingerprints.jsonl``)
+   that a second invocation over the same (or append-extended) dataset
+   resumes from without duplicating a single line.
+4. Warmup isolation (D-erv D1 fix): the underlying strategy's target
    state at every candle is computed from the FULL history via
    :func:`bithumb_bot.strategy.generate_signals` — the SMA/hysteresis
    rule needs the complete lookback window to be correct. But the
@@ -30,6 +30,17 @@ module adds:
    produces ZERO portfolio effect on the paper session: the paper
    portfolio always begins the forward window in cash, regardless of
    what the strategy would have signalled during warm-up.
+5. Immutable-prefix verification (D-erv D2 fix): every processed
+   forward candle's SHA-256 fingerprint is persisted to
+   ``candle_fingerprints.jsonl`` (see :func:`~bithumb_bot.paper.state.
+   candle_fingerprint`). On resume, BEFORE any new line is appended
+   anywhere and BEFORE the fresh-portfolio forward loop runs, every
+   recorded fingerprint is re-verified against the current dataset —
+   a mismatch (the candle's bytes changed) or a missing candle raises
+   :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError`. This is
+   STRICTER than the existing fills/signals prefix-replay check: a
+   mutated candle whose DERIVED signal/fill happens to coincidentally
+   still match would otherwise slip past that check.
 
 No-look-ahead / engine-reuse rationale
 ---------------------------------------
@@ -73,6 +84,7 @@ from bithumb_bot.errors import (
     FillReplayDivergenceError,
     ForwardDatasetDivergenceError,
     PaperStateDirError,
+    ProcessedPrefixMutatedError,
 )
 from bithumb_bot.execution import (
     LedgerEntry,
@@ -84,7 +96,16 @@ from bithumb_bot.execution import (
 )
 from bithumb_bot.market_data.candles import Candle
 from bithumb_bot.market_data.dataset import CandleDataset
-from bithumb_bot.paper.state import PaperState, append_jsonl, load_state, read_jsonl, save_state
+from bithumb_bot.paper.state import (
+    PaperState,
+    append_fingerprint,
+    append_jsonl,
+    candle_fingerprint,
+    load_state,
+    read_fingerprints,
+    read_jsonl,
+    save_state,
+)
 from bithumb_bot.strategy import StrategySignal, TargetState, generate_signals
 
 #: Fixed at the production ``price_over_sma`` baseline's warm-up length
@@ -370,6 +391,48 @@ def _resume_divergence_check(
         )
 
 
+def _verify_processed_prefix_fingerprints(
+    state_dir: Path, dataset: CandleDataset, prior_state: PaperState
+) -> None:
+    """Raise :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError` if any
+    previously processed forward candle's recorded SHA-256 fingerprint
+    (``candle_fingerprints.jsonl``) no longer matches the current dataset,
+    or if a previously processed candle is missing from it entirely.
+
+    Runs AFTER :func:`_resume_divergence_check` (an invocation-level input
+    drift — warmup slice hash, config, snapshot, market, unit, hysteresis —
+    surfaces as :class:`~bithumb_bot.errors.ForwardDatasetDivergenceError`
+    first, preserving already-tested behaviour) and BEFORE
+    :func:`_assert_prefix_replay` / the fresh-portfolio forward loop — a
+    candle-content mutation whose DERIVED signal/fill happens to
+    coincidentally still match would otherwise slip past that looser
+    fills/signals replay check.
+    """
+    recorded = read_fingerprints(state_dir)
+    if not recorded and prior_state.forward_candle_count > 0:
+        raise ProcessedPrefixMutatedError(
+            "prior state.json reports forward_candle_count="
+            f"{prior_state.forward_candle_count} but candle_fingerprints.jsonl "
+            "is empty — audit trail incomplete"
+        )
+    current_by_open_time = {c.open_time_utc: c for c in dataset.candles}
+    for row in recorded:
+        open_time = _parse_missing_utc(row["open_time_utc"])
+        current = current_by_open_time.get(open_time)
+        if current is None:
+            raise ProcessedPrefixMutatedError(
+                f"previously processed forward candle at {open_time.isoformat()} "
+                "is missing from the current dataset — refusing to append "
+                "onto a candle prefix whose content changed"
+            )
+        if candle_fingerprint(current) != row["sha256"]:
+            raise ProcessedPrefixMutatedError(
+                f"previously processed forward candle at {open_time.isoformat()} "
+                "has mutated (SHA-256 mismatch) — refusing to append onto a "
+                "candle prefix whose content changed"
+            )
+
+
 def _dataset_shape_refusal(
     dataset: CandleDataset, step: timedelta
 ) -> tuple[str, str] | None:
@@ -562,6 +625,63 @@ def _run_forward_loop(
     )
 
 
+@dataclass(frozen=True)
+class _ResumeContext:
+    """Prior-invocation cursor positions a resumed run appends onto."""
+
+    resumed: bool
+    prior_fill_count: int
+    prior_signal_count: int
+    prior_forward_candle_count: int
+
+
+def _load_resume_context(
+    state_dir: Path,
+    dataset: CandleDataset,
+    hashes: _DivergenceHashes,
+    paper_start_ts_utc: datetime,
+) -> _ResumeContext:
+    """Load prior ``state.json`` (if any) and run every resume-time
+    guard — invocation-level divergence first, then the D2
+    candle-content fingerprint verification — before returning the
+    prior audit-trail cursor positions the caller appends onto."""
+    prior_state = load_state(state_dir)
+    if prior_state is None:
+        return _ResumeContext(
+            resumed=False,
+            prior_fill_count=0,
+            prior_signal_count=0,
+            prior_forward_candle_count=0,
+        )
+    _resume_divergence_check(
+        prior_state,
+        hashes,
+        paper_start_ts_utc=paper_start_ts_utc,
+        dataset=dataset,
+        state_dir=state_dir,
+    )
+    _verify_processed_prefix_fingerprints(state_dir, dataset, prior_state)
+    return _ResumeContext(
+        resumed=True,
+        prior_fill_count=prior_state.forward_fill_count,
+        prior_signal_count=prior_state.forward_signal_count,
+        prior_forward_candle_count=prior_state.forward_candle_count,
+    )
+
+
+def _append_new_fingerprints(
+    state_dir: Path, dataset: CandleDataset, prior_forward_candle_count: int
+) -> None:
+    """Append one fingerprint per NEW forward candle processed this
+    invocation, BEFORE any corresponding fill/signal line — fingerprint-
+    first sequencing means a crash mid-write leaves the fingerprint log
+    strictly <= the fills/signals log, which is fail-closed on the next
+    resume's :func:`_verify_processed_prefix_fingerprints`."""
+    new_forward_candle_start = WARMUP_CANDLE_COUNT + prior_forward_candle_count
+    for idx in range(new_forward_candle_start, len(dataset.candles)):
+        append_fingerprint(state_dir, dataset.candles[idx])
+
+
 def run_paper_session(
     dataset: CandleDataset,
     snapshot: SnapshotV1,
@@ -660,21 +780,11 @@ def run_paper_session(
             )
 
     hashes = _compute_divergence_hashes(dataset, config, snapshot)
-
-    prior_state = load_state(state_dir)
-    resumed = prior_state is not None
-    prior_fill_count = 0
-    prior_signal_count = 0
-    if prior_state is not None:
-        _resume_divergence_check(
-            prior_state,
-            hashes,
-            paper_start_ts_utc=paper_start_ts_utc,
-            dataset=dataset,
-            state_dir=state_dir,
-        )
-        prior_fill_count = prior_state.forward_fill_count
-        prior_signal_count = prior_state.forward_signal_count
+    resume_ctx = _load_resume_context(state_dir, dataset, hashes, paper_start_ts_utc)
+    resumed = resume_ctx.resumed
+    prior_fill_count = resume_ctx.prior_fill_count
+    prior_signal_count = resume_ctx.prior_signal_count
+    prior_forward_candle_count = resume_ctx.prior_forward_candle_count
 
     used_provisional, fee_rate, fee_reason, fee_code = _buy_fee_preflight(snapshot, config)
     if fee_reason is not None:
@@ -750,6 +860,9 @@ def run_paper_session(
     ]
     _assert_prefix_replay(recomputed_prior_signals, on_disk_signals, signals_path)
     new_signals = forward_signals[prior_signal_count:]
+
+    # D2 (D-erv): fingerprint-first sequencing — see helper docstring.
+    _append_new_fingerprints(state_dir, dataset, prior_forward_candle_count)
 
     for entry in new_entries:
         append_jsonl(fills_path, _serialize_ledger_entry(entry))
