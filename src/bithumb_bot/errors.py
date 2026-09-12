@@ -389,6 +389,44 @@ class UnresolvedFactError(BithumbBotError):
         self.fact_name = fact_name
 
 
+class PaperStateDirError(BithumbBotError):
+    """Raised when a paper session's ``--state-dir`` cannot be used.
+
+    D-90 phase discipline for the M4 §5 paper runner: the directory
+    argument MUST either not exist (created on first use) or already
+    be a directory. A pre-existing non-directory file at that path is
+    refused rather than silently replaced.
+    """
+
+
+class ForwardDatasetDivergenceError(BithumbBotError):
+    """Raised when a resumed paper session's inputs diverge from ``state.json``.
+
+    The restart-safety contract requires the warm-up slice hash, the
+    computed ``paper_start_ts_utc``, the dataset market/unit, the
+    configured hysteresis band, and the config/snapshot content
+    hashes to be identical across invocations that share a
+    ``--state-dir``. Any drift means the on-disk audit trail no
+    longer corresponds to the current inputs — refusing here is the
+    fail-closed contract rather than silently continuing a session
+    with a materially different setup.
+    """
+
+
+class FillReplayDivergenceError(BithumbBotError):
+    """Raised when replaying the engine over the recorded forward window
+    does not reproduce the on-disk ``fills.jsonl`` / ``signals.jsonl``
+    byte-for-byte.
+
+    Because :func:`bithumb_bot.backtest.runner.run_backtest` is pure
+    and deterministic, the previously-recorded prefix of forward
+    entries/signals MUST be reproducible from the current dataset. A
+    mismatch means the audit trail (or the dataset feeding it) was
+    corrupted or tampered with — the paper runner refuses rather than
+    silently appending onto a possibly-invalid history.
+    """
+
+
 class ObsoleteVerificationBundleError(BithumbBotError):
     """Raised when a verification bundle uses an obsolete schema or fact set.
 
@@ -420,6 +458,8 @@ __all__ = [
     "BithumbBotError",
     "CandleValidationError",
     "CriticalCorruptionAlert",
+    "FillReplayDivergenceError",
+    "ForwardDatasetDivergenceError",
     "Gate1LoadError",
     "InsufficientCashError",
     "InsufficientPositionError",
@@ -427,6 +467,7 @@ __all__ = [
     "NoNextCandleError",
     "NotionalCapExceededError",
     "ObsoleteVerificationBundleError",
+    "PaperStateDirError",
     "ProhibitedCredentialDetectedError",
     "PublicRestErrorResponseError",
     "PublicRestNotVerifiedError",
