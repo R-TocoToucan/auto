@@ -5,9 +5,9 @@ milestone_name: milestone
 current_phase: 01
 status: completed
 stopped_at: Completed 01-04-PLAN.md
-last_updated: "2026-09-08T11:53:12.112Z"
-last_activity: 2026-09-08
-last_activity_desc: Phase 01 marked complete
+last_updated: "2026-09-11T23:51:13.010Z"
+last_activity: 2026-09-12
+last_activity_desc: "Completed quick task 260912-cao: bounded forward paper-trading runner"
 progress:
   total_phases: 1
   completed_phases: 1
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 Phase: 01 — COMPLETE
 Plan: 4 of 4
 Status: Phase 01 complete
-Last activity: 2026-09-08 — Phase 01 marked complete
+Last activity: 2026-09-12 — Completed quick task 260912-cao: bounded forward paper-trading runner
 
 Progress: [██████████] 100%
 
@@ -98,6 +98,12 @@ None yet.
 - Gate-1 pre-build decisions (stop mechanism, L2 source, simulator fidelity, order policy) must be resolved and recorded at Phase 1 discuss/plan time — Phase 2 cannot build the simulator's stop-limit state machine until the stop mechanism is frozen.
 - Bithumb API facts flagged "verify at build time" against `apidocs.bithumb.com` before Phase 1 (M1) and Phase 5 (M6A): private WS v1-vs-v2, JWT claim construction, legacy stop-limit fee, pagination cursor inclusivity, per-channel rate limits.
 - REQUIREMENTS.md accounting reconciled to **55 total specification requirements = 51 in-scope v1 (all mapped to Phases 1–6) + 4 deferred post-holdout LIVE-01…04** (tracked, not started, not completed, not removed). RSCH-01…04 are supplemental research suggestions outside the 55 spec-requirement bucket.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260912-cao | Bounded forward paper-trading runner (price_over_sma, hysteresis_bps="75", engineering_smoke) | 2026-09-12 | 38d8a31 | [260912-cao-implement-a-bounded-forward-paper-tradin](./quick/260912-cao-implement-a-bounded-forward-paper-tradin/) |
 
 ## Deferred Items
 
