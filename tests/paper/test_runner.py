@@ -30,10 +30,13 @@ from .conftest import (
 
 
 class TestWarmupSignalDoesNotLeakIntoForward:
-    """D-erv (D1): the fresh-portfolio forward loop never lets a
-    warmup-only transition carry a filled position across
-    ``paper_start_ts_utc``. See ``paper/runner.py``'s module docstring
-    and the ``_forward_only_signals`` worked trace."""
+    """D1 (D-erv, corrected by D-no0's reduced-dataset fix): the paper
+    runner's single ``run_backtest`` call over the reduced dataset never
+    lets a warmup-sourced position carry across ``paper_start_ts_utc``
+    with warmup-derived state — the strategy's internal ``current_state``
+    starts fresh (CASH) at the first candle the reduced dataset can
+    compute an SMA for, which is ``paper_start_ts_utc`` itself. See
+    ``paper/runner.py``'s module docstring for the worked trace."""
 
     def test_warmup_sourced_long_becomes_forward_only_buy_then_sell(
         self, tmp_path: Path
@@ -54,15 +57,18 @@ class TestWarmupSignalDoesNotLeakIntoForward:
             )
         )
         # Forward: candle at paper_start (index 1200) stays flat at the
-        # spike level (no new signal there) — the paper session's OWN
-        # fresh-CASH baseline diverges from the warmup-inherited LONG
-        # state right here, so a SYNTHETIC forward LONG transition is
-        # re-emitted at this candle (see module docstring). Index 1201
-        # (also flat) is the buy's fill candle. Index 1202 is a genuine
-        # forward-sourced CASH transition (a drop, but not so extreme
-        # that its own low would breach the protective stop below —
-        # see the config comment). Index 1203 is the sell's fill
-        # candle.
+        # spike level. This fixture's close=200_000_000 legitimately
+        # crosses upward against the REDUCED dataset's own SMA (computed
+        # over the last 1199 pre-paper candles + this candle itself,
+        # approx. 100_333_333 — well below the 200M close and its
+        # hysteresis band), so a genuine forward LONG signal fires here
+        # under the correct reduced-dataset approach — not a
+        # re-derivation against any full-history signal stream. Index
+        # 1201 (also flat) is the buy's fill candle. Index 1202 is a
+        # genuine forward-sourced CASH transition (a drop, but not so
+        # extreme that its own low would breach the protective stop
+        # below — see the config comment). Index 1203 is the sell's
+        # fill candle.
         candles.append(flat(WARMUP_CANDLE_COUNT, "200000000"))
         candles.append(flat(WARMUP_CANDLE_COUNT + 1, "200000000"))
         candles.append(

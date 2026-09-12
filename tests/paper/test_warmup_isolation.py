@@ -1,17 +1,17 @@
-"""Adversarial tests for the D-erv D1 warmup-isolation fix.
+"""Adversarial tests for the D1 warmup-isolation fix (D-erv, tightened
+D-no0 via the reduced-dataset approach).
 
 Covers must_have truths #1 (paper-start portfolio is unambiguously
 fresh), #2 (the first fills.jsonl entry, when one exists, is always a
-BUY), and #3 (a warmup slice's transition-emitting SHAPE produces zero
-forward portfolio effect — demonstrated via a swap-equivalence
-fixture).
+BUY), and #3 (the forward-visible ledger at ``paper_start_ts_utc`` is
+computed from a REDUCED dataset whose SMA starts fresh — the strategy's
+internal ``current_state`` is CASH at that point by construction, never
+by re-derivation against a full-history signal stream).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 
 from bithumb_bot.paper.runner import WARMUP_CANDLE_COUNT, run_paper_session
 from bithumb_bot.paper.state import load_state, read_jsonl
@@ -19,72 +19,77 @@ from bithumb_bot.paper.state import load_state, read_jsonl
 from .conftest import STEP, flat, make_backtest_config, make_candle, make_dataset, make_snapshot
 
 
-class TestWarmupIsolationSwapEquivalent:
-    """must_have truth #3.
+class TestForwardOnlyStartsFromCash:
+    """must_have truth #3 (D-no0 revision).
 
-    Two datasets sharing the SAME single forward candle:
-
-    * ``A`` — warmup ends with a spike at the last warmup candle
-      (index 1199) that DOES emit a real ``LONG`` transition from
-      :func:`~bithumb_bot.strategy.generate_signals`.
-    * ``B`` — warmup is flat at the spike's price the whole way
-      through (never emits any signal at all).
-
-    The shared forward candle's extreme drop is calibrated so that,
-    for A, the SAME first-forward iteration that
-    ``_forward_only_signals`` walks consumes BOTH the warmup-sourced
-    ``LONG@1199`` signal AND a genuine ``CASH`` reversal fired by
-    ``generate_signals`` at the forward candle itself (source_open_time
-    == the forward candle's own open) — netting true_target back to
-    ``CASH`` before any transition is ever re-emitted. For B, no
-    signal ever fires, so true_target is ``CASH`` throughout too. Both
-    scenarios therefore reduce to an EMPTY forward-only stream — proving
-    the warmup slice's transition-emitting shape (whether it fires a
-    signal at all) has zero effect on the forward-visible ledger, not
-    merely that its *value* happens to match after the fact.
+    The erv-era swap-equivalence property ("warmup shape never affects
+    the forward ledger") was itself an artifact of the deleted
+    full-history re-derivation mechanism. Under the correct
+    reduced-dataset fix (see ``paper/runner.py``'s module docstring),
+    the warmup SLICE is part of the SMA the reduced dataset computes at
+    ``paper_start_ts_utc`` — so warmup shape legitimately changes the
+    forward-visible ledger. These two fixtures share the IDENTICAL
+    forward candles; only their warmup shape differs, and the divergent
+    (not equal) outcome below is the exact expected behaviour, computed
+    by hand from the reduced-dataset SMA rule.
     """
 
-    def test_swap_equivalent_warmups_yield_identical_forward_ledger(
-        self,
-        tmp_path_factory: pytest.TempPathFactory,
+    def test_warmup_ending_with_spike_transitions_at_forward_from_fresh_cash(
+        self, tmp_path: Path
     ) -> None:
-        p = "100000000"
-        spike = "10000000000"
-
-        warmup_a = [flat(i, p) for i in range(WARMUP_CANDLE_COUNT - 1)]
-        warmup_a.append(make_candle(WARMUP_CANDLE_COUNT - 1, p, spike, p, spike))
-        forward_candle = make_candle(WARMUP_CANDLE_COUNT, spike, spike, "1", "1")
-        candles_a = [*warmup_a, forward_candle]
-
-        warmup_b = [flat(i, spike) for i in range(WARMUP_CANDLE_COUNT)]
-        candles_b = [*warmup_b, forward_candle]
-
-        dataset_a = make_dataset(candles_a)
-        dataset_b = make_dataset(candles_b)
+        # Warmup: 1199 flat candles at 100M, then a spike to 200M at the
+        # LAST warmup candle (index 1199). The reduced dataset
+        # (candles[1:]) computes its SMA over [100M]*1198 + [200M, 200M]:
+        # running_sum = 100M*1198 + 200M + 200M = 120_200_000_000;
+        # scaled_close = 200M * 1200 * 10000 is far larger than
+        # running_sum * 10075 — CASH -> LONG fires exactly at the
+        # forward candle (paper_start).
+        candles = [flat(i, "100000000") for i in range(WARMUP_CANDLE_COUNT - 1)]
+        candles.append(
+            make_candle(
+                WARMUP_CANDLE_COUNT - 1,
+                "100000000",
+                "200000000",
+                "100000000",
+                "200000000",
+            )
+        )
+        candles.append(flat(WARMUP_CANDLE_COUNT, "200000000"))
+        candles.append(flat(WARMUP_CANDLE_COUNT + 1, "200000000"))
+        dataset = make_dataset(candles)
         snapshot = make_snapshot()
         config = make_backtest_config()
-        now = forward_candle.open_time_utc + STEP
+        now = dataset.candles[-1].open_time_utc + STEP
 
-        state_dir_a = tmp_path_factory.mktemp("swap_a")
-        state_dir_b = tmp_path_factory.mktemp("swap_b")
+        result = run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
 
-        result_a = run_paper_session(dataset_a, snapshot, config, state_dir_a, now_utc=now)
-        result_b = run_paper_session(dataset_b, snapshot, config, state_dir_b, now_utc=now)
+        assert result.invalid_reason is None
+        assert len(result.forward_entries) == 1
+        buy = result.forward_entries[0]
+        assert buy.side == "buy"
+        assert buy.source_open_time_utc == candles[WARMUP_CANDLE_COUNT].open_time_utc
+        assert buy.fill_ts_utc == candles[WARMUP_CANDLE_COUNT + 1].open_time_utc
 
-        assert result_a.invalid_reason is None
-        assert result_b.invalid_reason is None
-        assert result_a.forward_entries == result_b.forward_entries
+    def test_warmup_flat_at_terminal_price_stays_flat(self, tmp_path: Path) -> None:
+        # SAME forward candles as above, but the warmup is flat at 200M
+        # the WHOLE WAY THROUGH — no warmup transition could possibly
+        # have fired (close == running SMA exactly at every warmup
+        # index). The reduced dataset's SMA is 200M exactly (every close
+        # in the window is 200M): scaled_close = 200M*1200*10000 ==
+        # running_sum*10000 < running_sum*10075 — CASH is retained, no
+        # signal ever fires.
+        candles = [flat(i, "200000000") for i in range(WARMUP_CANDLE_COUNT)]
+        candles.append(flat(WARMUP_CANDLE_COUNT, "200000000"))
+        candles.append(flat(WARMUP_CANDLE_COUNT + 1, "200000000"))
+        dataset = make_dataset(candles)
+        snapshot = make_snapshot()
+        config = make_backtest_config()
+        now = dataset.candles[-1].open_time_utc + STEP
 
-        assert result_a.backtest_result is not None
-        assert result_b.backtest_result is not None
-        assert (
-            result_a.backtest_result.final_cash_krw
-            == result_b.backtest_result.final_cash_krw
-        )
-        assert (
-            result_a.backtest_result.final_position_qty
-            == result_b.backtest_result.final_position_qty
-        )
+        result = run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        assert result.invalid_reason is None
+        assert result.forward_entries == ()
 
 
 class TestPaperStartInvariants:
@@ -148,8 +153,10 @@ class TestFirstFillIsBuy:
     ) -> None:
         # A warmup-only spike (would-be LONG signal at the very last
         # warmup candle) followed by a genuine forward CASH reversal.
-        # fills.jsonl's FIRST recorded line must be the synthesized
-        # forward buy, never a bare sell of a phantom warmup position.
+        # The reduced dataset's own SMA computation at paper_start
+        # produces a fresh LONG transition from the CASH baseline, so
+        # fills.jsonl's FIRST recorded line must be that forward buy,
+        # never a bare sell of a phantom warmup position.
         candles = [flat(i, "100000000") for i in range(WARMUP_CANDLE_COUNT - 1)]
         candles.append(
             make_candle(

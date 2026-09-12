@@ -2,15 +2,17 @@
 
 Deliberately NOT a reimplementation of the accounting rules. Every
 accounting rule (fees, slippage, tick/step rounding, min-order,
-notional cap, protective stop, stopped-out lockout) already lives
-inside :func:`bithumb_bot.execution.engine.execute_intent` and
-:func:`bithumb_bot.execution.stop.evaluate_protective_stop`. This
+notional cap, protective stop, stopped-out lockout, contiguity/gap
+detection, tz-awareness, the buy-fee model's verification status) is
+enforced inside the single call to
+:func:`bithumb_bot.backtest.runner.run_backtest` this module makes on
+a reduced dataset (see "Warmup isolation rationale" below). This
 module adds:
 
 1. A 1,200-candle warm-up / forward split — the first
    :data:`WARMUP_CANDLE_COUNT` candles seed the SMA; only candles at
-   or after ``paper_start_ts_utc`` are ever handed to the fresh-
-   portfolio forward loop below.
+   or after ``paper_start_ts_utc`` are ever treated as forward-window
+   results.
 2. An incomplete-candle refusal — a candle whose close boundary has
    not yet passed relative to ``now_utc`` cannot honestly be treated
    as a completed observation, so the whole invocation refuses.
@@ -18,57 +20,52 @@ module adds:
    ``fills.jsonl`` + ``signals.jsonl`` + ``candle_fingerprints.jsonl``)
    that a second invocation over the same (or append-extended) dataset
    resumes from without duplicating a single line.
-4. Warmup isolation (D-erv D1 fix): the underlying strategy's target
-   state at every candle is computed from the FULL history via
-   :func:`bithumb_bot.strategy.generate_signals` — the SMA/hysteresis
-   rule needs the complete lookback window to be correct. But the
-   FORWARD-ONLY transition stream actually consumed by the fresh-
-   portfolio ledger loop below is derived by :func:`_forward_only_signals`
-   under an explicit ``CASH`` baseline at ``paper_start_ts_utc`` — so a
-   warm-up-only transition (e.g. a spike inside the warm-up window that
-   would have triggered a LONG entry had trading started earlier)
-   produces ZERO portfolio effect on the paper session: the paper
-   portfolio always begins the forward window in cash, regardless of
-   what the strategy would have signalled during warm-up.
-5. Immutable-prefix verification (D-erv D2 fix): every processed
-   forward candle's SHA-256 fingerprint is persisted to
-   ``candle_fingerprints.jsonl`` (see :func:`~bithumb_bot.paper.state.
-   candle_fingerprint`). On resume, BEFORE any new line is appended
-   anywhere and BEFORE the fresh-portfolio forward loop runs, every
+4. Warmup isolation (D-no0 D1 fix): the paper runner builds a REDUCED
+   dataset containing the last ``lookback - 1`` pre-paper candles plus
+   all forward candles, and calls the UNMODIFIED
+   :func:`bithumb_bot.backtest.runner.run_backtest` on it exactly
+   once. The first candle in the reduced dataset for which
+   :func:`~bithumb_bot.strategy.generate_signals` can compute an SMA
+   is ``paper_start_ts_utc`` itself; by construction the strategy's
+   internal ``current_state`` is still ``CASH`` at that point, so no
+   warmup-sourced transition can affect the forward window.
+5. Immutable-prefix verification (D-erv D2 fix, tightened by D-no0):
+   every processed forward candle's SHA-256 fingerprint is persisted
+   to ``candle_fingerprints.jsonl`` (see :func:`~bithumb_bot.paper.
+   state.candle_fingerprint`). On resume, BEFORE any new line is
+   appended anywhere and BEFORE the single ``run_backtest`` call, every
    recorded fingerprint is re-verified against the current dataset —
-   a mismatch (the candle's bytes changed) or a missing candle raises
+   a mismatch (the candle's bytes changed), a missing candle, a
+   row-count disagreement, a reordered row, a tail disagreement, or a
+   malformed row all raise
    :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError`. This is
    STRICTER than the existing fills/signals prefix-replay check: a
    mutated candle whose DERIVED signal/fill happens to coincidentally
    still match would otherwise slip past that check.
 
-No-look-ahead / engine-reuse rationale
----------------------------------------
-The shared chronological backtest engine's own main loop (fires a
-pending intent at candle-open, evaluates the active protective stop,
-then consumes the candle's close-boundary signal) has no notion of
-"start the portfolio fresh at candle N" — adding one would require a
-warmup-skip flag on that shared engine, which would violate the
-"do not modify :mod:`bithumb_bot.execution` / the shared backtest
-runner" constraint. Because the strategy is stateless (targets derive
-from the rolling SMA + hysteresis computed over the candle window
-itself, not from any strategy-side memory), this module instead
-duplicates the engine's own event loop shape here, calling the SAME
-unmodified :func:`execute_intent` / :func:`evaluate_protective_stop`
-primitives directly, over ONLY the forward-window candles, starting
-from an explicit fresh :class:`~bithumb_bot.execution.ledger.LedgerState`.
-Fee/slippage/rounding/stop/cap semantics are therefore UNCHANGED — they
-live inside the primitives, not in this loop. Each candle's view is
-truncated to ``[0..i]`` (see :func:`_view_up_to`) for the same reason
-the shared engine truncates it: :func:`evaluate_protective_stop`'s own
-"walk expected slots up to the last eligible candle" logic would
-otherwise scan into genuinely future data if handed the untruncated
-dataset.
+Warmup isolation rationale
+---------------------------
+The ``price_over_sma`` strategy is stateful:
+:func:`~bithumb_bot.strategy.generate_signals` keeps an internal
+``current_state: TargetState`` variable across candles in its loop
+and only emits a signal on a transition from that state (see
+``bithumb_bot/strategy/baseline.py``). Feeding warmup candles into
+``generate_signals`` writes that state; if the paper runner then
+called ``generate_signals`` over the full warmup+forward window, the
+forward slice would inherit whatever state the warmup produced — a
+leak. The runner avoids this by constructing a REDUCED dataset (last
+``lookback - 1`` pre-paper candles + all forward candles) and calling
+the UNMODIFIED ``run_backtest`` on it exactly once: the first candle
+in the reduced dataset with a valid SMA is ``paper_start_ts_utc``
+itself, and ``generate_signals`` sees no earlier candle that could
+have transitioned it out of the initial CASH state. No
+:mod:`bithumb_bot.strategy` code changes, no
+:mod:`bithumb_bot.backtest` code changes, no
+:mod:`bithumb_bot.execution` code changes.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -77,7 +74,7 @@ from typing import Any
 
 from bithumb_bot.artifact.canonical import canonical_bytes, sha256_hex
 from bithumb_bot.backtest.config import BacktestConfig
-from bithumb_bot.backtest.runner import _DOMAIN_REFUSALS, BacktestResult
+from bithumb_bot.backtest.runner import BacktestResult, run_backtest
 from bithumb_bot.bithumb_spec.snapshot import SnapshotV1
 from bithumb_bot.core.money import Money, Qty
 from bithumb_bot.errors import (
@@ -86,14 +83,7 @@ from bithumb_bot.errors import (
     PaperStateDirError,
     ProcessedPrefixMutatedError,
 )
-from bithumb_bot.execution import (
-    LedgerEntry,
-    LedgerState,
-    OrderIntent,
-    ProtectiveStop,
-    evaluate_protective_stop,
-    execute_intent,
-)
+from bithumb_bot.execution import LedgerEntry
 from bithumb_bot.market_data.candles import Candle
 from bithumb_bot.market_data.dataset import CandleDataset
 from bithumb_bot.paper.state import (
@@ -106,7 +96,7 @@ from bithumb_bot.paper.state import (
     read_jsonl,
     save_state,
 )
-from bithumb_bot.strategy import StrategySignal, TargetState, generate_signals
+from bithumb_bot.strategy import StrategySignal, generate_signals
 
 #: Fixed at the production ``price_over_sma`` baseline's warm-up length
 #: (``BaselineStrategyConfig.PRODUCTION_WARMUP_CANDLES``). Not read from
@@ -120,11 +110,11 @@ WARMUP_CANDLE_COUNT = 1_200
 class PaperSessionResult:
     """Outcome of one :func:`run_paper_session` invocation.
 
-    ``backtest_result`` is a synthesized
-    :class:`~bithumb_bot.backtest.runner.BacktestResult` built from the
-    fresh-portfolio forward loop's terminal state (``None`` only when
-    the run refused before reaching the loop, e.g. insufficient
-    candles or an incomplete final candle) — callers needing final
+    ``backtest_result`` is the :class:`~bithumb_bot.backtest.runner.
+    BacktestResult` returned by the single ``run_backtest`` call over
+    the reduced dataset (``None`` only when the run refused before
+    reaching that call, e.g. insufficient candles, insufficient
+    lookback, or an incomplete final candle) — callers needing final
     cash/position, pending intent, active stop, or lockout state read
     it from there rather than duplicating those fields here.
     """
@@ -245,89 +235,26 @@ def _parse_missing_utc(iso: str) -> datetime:
     return parsed
 
 
-def _view_up_to(dataset: CandleDataset, i: int) -> CandleDataset:
-    """Truncated dataset view containing candles ``[0..i]`` only.
+def _build_reduced_dataset(dataset: CandleDataset, reduce_start_idx: int) -> CandleDataset:
+    """Return a REDUCED :class:`CandleDataset` for the single
+    ``run_backtest`` call (D1 fix): the last ``lookback - 1`` pre-paper
+    candles plus every forward candle, so the strategy's internal
+    ``current_state`` starts fresh at ``paper_start_ts_utc`` (see module
+    docstring).
 
-    Duplicated from the shared backtest engine's own main-loop helper
-    (same shape, kept local so this module never imports that engine's
-    top-level entry point — see module docstring) so
-    :func:`~bithumb_bot.execution.engine.execute_intent` and
-    :func:`~bithumb_bot.execution.stop.evaluate_protective_stop` never
-    see a candle past index ``i``.
+    Mirrors the dataset-copy technique the shared backtest engine's own
+    truncated-view helper uses, so the schema round-trip through
+    ``model_copy`` is preserved.
     """
-    last_open = dataset.candles[i].open_time_utc
+    reduced_candles = dataset.candles[reduce_start_idx:]
     kept_missing = [
-        s for s in dataset.missing_intervals_utc if _parse_missing_utc(s) <= last_open
+        s
+        for s in dataset.missing_intervals_utc
+        if _parse_missing_utc(s) >= reduced_candles[0].open_time_utc
     ]
     return dataset.model_copy(
-        update={"candles": dataset.candles[: i + 1], "missing_intervals_utc": kept_missing}
+        update={"candles": reduced_candles, "missing_intervals_utc": kept_missing}
     )
-
-
-def _forward_only_signals(
-    all_candles: Sequence[Candle],
-    all_signals: Sequence[StrategySignal],
-    paper_start_idx: int,
-    unit_minutes: int,
-) -> tuple[StrategySignal, ...]:
-    """Derive the forward-only transition stream for a FRESH portfolio.
-
-    ``all_signals`` is the full-history transition stream from
-    :func:`~bithumb_bot.strategy.generate_signals` (computed over the
-    complete warm-up + forward candle window, because the SMA needs the
-    full lookback to be correct). This helper re-derives, for each
-    forward candle, the TRUE underlying strategy target — the state the
-    strategy would be in at that candle given the full history — and
-    re-emits a transition ONLY when that state differs from an explicit
-    ``CASH`` baseline established at ``paper_start_idx``: a fresh
-    portfolio that has never seen any warm-up-sourced transition. See
-    the module docstring and the plan's worked trace for the derivation.
-    """
-    sorted_signals = sorted(all_signals, key=lambda s: s.source_open_time_utc)
-    step = timedelta(minutes=unit_minutes)
-    forward: list[StrategySignal] = []
-    prev_target: TargetState = "CASH"
-    true_target: TargetState = "CASH"
-    sig_idx = 0
-    n_sigs = len(sorted_signals)
-    for i in range(paper_start_idx, len(all_candles)):
-        candle = all_candles[i]
-        open_time = candle.open_time_utc
-        while (
-            sig_idx < n_sigs
-            and sorted_signals[sig_idx].source_open_time_utc <= open_time
-        ):
-            true_target = sorted_signals[sig_idx].target_state
-            sig_idx += 1
-        if true_target != prev_target:
-            forward.append(
-                StrategySignal(
-                    target_state=true_target,
-                    signal_ts_utc=open_time + step,
-                    source_open_time_utc=open_time,
-                    unit_minutes=unit_minutes,
-                    close_value=candle.close.value,
-                    # Not recomputed from the rolling window — never
-                    # consumed downstream (only target_state /
-                    # source_open_time_utc / signal_ts_utc are
-                    # serialized to signals.jsonl or read by the
-                    # forward loop below).
-                    sma_value=Decimal("0"),
-                    lookback_candles=0,
-                )
-            )
-            prev_target = true_target
-    return tuple(forward)
-
-
-def _assert_tz_aware_utc(dataset: CandleDataset) -> None:
-    for candle in dataset.candles:
-        offset = candle.open_time_utc.utcoffset()
-        if candle.open_time_utc.tzinfo is None or offset != timedelta(0):
-            raise ValueError(
-                f"candle.open_time_utc {candle.open_time_utc!r} is not "
-                "tz-aware UTC (defence-in-depth)"
-            )
 
 
 @dataclass(frozen=True)
@@ -403,7 +330,7 @@ def _verify_processed_prefix_fingerprints(
     drift — warmup slice hash, config, snapshot, market, unit, hysteresis —
     surfaces as :class:`~bithumb_bot.errors.ForwardDatasetDivergenceError`
     first, preserving already-tested behaviour) and BEFORE
-    :func:`_assert_prefix_replay` / the fresh-portfolio forward loop — a
+    :func:`_assert_prefix_replay` / the single ``run_backtest`` call — a
     candle-content mutation whose DERIVED signal/fill happens to
     coincidentally still match would otherwise slip past that looser
     fills/signals replay check.
@@ -431,198 +358,6 @@ def _verify_processed_prefix_fingerprints(
                 "has mutated (SHA-256 mismatch) — refusing to append onto a "
                 "candle prefix whose content changed"
             )
-
-
-def _dataset_shape_refusal(
-    dataset: CandleDataset, step: timedelta
-) -> tuple[str, str] | None:
-    """Return ``(reason, code)`` if ``dataset`` fails contiguity or
-    reported-missing-interval validation, else ``None``.
-
-    Duplicated from the shared backtest engine's own pre-flight (this
-    runner no longer calls that engine's top-level entry point, so the
-    same gap/missing-interval detection must live here to keep
-    ``InternalCandleGapError`` / ``ReportedMissingIntervalError``
-    reachable as refusals, not raised exceptions).
-    """
-    prev_open = dataset.candles[0].open_time_utc
-    for candle in dataset.candles[1:]:
-        expected = prev_open + step
-        if candle.open_time_utc != expected:
-            return (
-                f"internal missing candle: gap between {prev_open.isoformat()} "
-                f"and {candle.open_time_utc.isoformat()}",
-                "InternalCandleGapError",
-            )
-        prev_open = candle.open_time_utc
-
-    first_open = dataset.candles[0].open_time_utc
-    last_open_overall = dataset.candles[-1].open_time_utc
-    for iso in dataset.missing_intervals_utc:
-        parsed = _parse_missing_utc(iso)
-        if first_open <= parsed <= last_open_overall:
-            return (
-                f"reported missing interval at {parsed.isoformat()} lies "
-                "inside the processed candle range",
-                "ReportedMissingIntervalError",
-            )
-    return None
-
-
-def _buy_fee_preflight(
-    snapshot: SnapshotV1, config: BacktestConfig
-) -> tuple[bool, Decimal, None, None] | tuple[None, None, str, str]:
-    """Return ``(used_provisional, fee_rate, None, None)`` on success or
-    ``(None, None, reason, code)`` on refusal.
-
-    Duplicated from the shared backtest engine's own pre-flight (see
-    module docstring: that engine's top-level entry point is no longer
-    called here, so its necessary safety check must live here too).
-    """
-    buy_status = snapshot.verification_status.get("market_buy_fee_reservation")
-    if buy_status == "confirmed_read_only":
-        return False, snapshot.fee_rates.bid, None, None
-    if buy_status == "provisional_documented":
-        if not config.execution.allow_provisional_fee_model:
-            return (
-                None,
-                None,
-                "snapshot.verification_status['market_buy_fee_reservation'] "
-                "== 'provisional_documented' but ExecutionConfig."
-                "allow_provisional_fee_model is False — refusing to size a "
-                "BUY intent under unverified fee semantics",
-                "UnverifiedFeeModelError",
-            )
-        return True, snapshot.fee_rates.bid, None, None
-    return (
-        None,
-        None,
-        "snapshot.verification_status['market_buy_fee_reservation'] == "
-        f"{buy_status!r} — not a usable buy-fee model status",
-        "UnverifiedFeeModelError",
-    )
-
-
-@dataclass(frozen=True)
-class _ForwardLoopResult:
-    """Outcome of :func:`_run_forward_loop` — a fresh-portfolio ledger
-    walk over ONLY the forward candles (see module docstring)."""
-
-    state: LedgerState
-    pending_intent: OrderIntent | None
-    active_stop: ProtectiveStop | None
-    stopped_out_lockout: bool
-    processed_last: datetime | None
-    invalid_reason: str | None
-    refusal_code: str | None
-
-
-def _run_forward_loop(
-    dataset: CandleDataset,
-    snapshot: SnapshotV1,
-    config: BacktestConfig,
-    forward_signals_by_source: dict[datetime, TargetState],
-    fee_rate: Decimal,
-) -> _ForwardLoopResult:
-    """Fresh-portfolio forward loop — mirrors the shared backtest
-    engine's own event order (execute pending intent at open ->
-    evaluate stop -> consume close-boundary signal), but starts a
-    brand-new :class:`LedgerState` and walks ONLY the forward candles,
-    driven by the forward-only signal stream (see module docstring).
-    """
-    state = LedgerState(cash_krw=config.starting_cash_krw, position_qty=Qty(Decimal("0")))
-    pending_intent: OrderIntent | None = None
-    active_stop: ProtectiveStop | None = None
-    stopped_out_lockout = False
-    invalid_reason: str | None = None
-    refusal_code: str | None = None
-    processed_last: datetime | None = None
-
-    for i in range(WARMUP_CANDLE_COUNT, len(dataset.candles)):
-        candle = dataset.candles[i]
-        view = _view_up_to(dataset, i)
-
-        if (
-            pending_intent is not None
-            and pending_intent.signal_ts_utc <= candle.open_time_utc
-        ):
-            try:
-                state, entry = execute_intent(
-                    state, pending_intent, view, snapshot, config.execution
-                )
-            except _DOMAIN_REFUSALS as exc:
-                invalid_reason = str(exc)
-                refusal_code = type(exc).__name__
-                break
-            pending_intent = None
-            if entry.side == "buy":
-                stop_price_d = entry.fill_price.value * (
-                    Decimal("1") - config.protective_stop_fraction
-                )
-                active_stop = ProtectiveStop.from_entry(
-                    entry, stop_price=Money(stop_price_d)
-                )
-            else:
-                active_stop = None
-
-        if active_stop is not None:
-            try:
-                evaluation = evaluate_protective_stop(
-                    state, active_stop, view, snapshot, config.execution
-                )
-            except _DOMAIN_REFUSALS as exc:
-                invalid_reason = str(exc)
-                refusal_code = type(exc).__name__
-                break
-            if evaluation.triggered:
-                state = evaluation.new_state
-                active_stop = None
-                stopped_out_lockout = True
-
-        target = forward_signals_by_source.get(candle.open_time_utc)
-        if target == "LONG":
-            if (
-                state.position_qty.value == 0
-                and not stopped_out_lockout
-                and pending_intent is None
-            ):
-                target_debit = state.cash_krw.value * config.target_sleeve_fraction
-                intended_pre_fee = target_debit / (Decimal("1") + fee_rate)
-                if intended_pre_fee > config.execution.max_notional_krw.value:
-                    invalid_reason = (
-                        f"intended pre-fee order notional {intended_pre_fee} "
-                        f"exceeds max_validated_notional_krw "
-                        f"{config.execution.max_notional_krw.value} — "
-                        "refusing to clip"
-                    )
-                    refusal_code = "NotionalCapExceededError"
-                    processed_last = candle.open_time_utc
-                    break
-                pending_intent = OrderIntent.buy_from_signal(
-                    candle, Money(intended_pre_fee)
-                )
-        elif target == "CASH":
-            if state.position_qty.value > 0:
-                if not (
-                    pending_intent is not None and pending_intent.side == "sell"
-                ):
-                    pending_intent = OrderIntent.sell_from_signal(
-                        candle, state.position_qty
-                    )
-            elif stopped_out_lockout:
-                stopped_out_lockout = False
-
-        processed_last = candle.open_time_utc
-
-    return _ForwardLoopResult(
-        state=state,
-        pending_intent=pending_intent,
-        active_stop=active_stop,
-        stopped_out_lockout=stopped_out_lockout,
-        processed_last=processed_last,
-        invalid_reason=invalid_reason,
-        refusal_code=refusal_code,
-    )
 
 
 @dataclass(frozen=True)
@@ -698,29 +433,34 @@ def run_paper_session(
        (:class:`~bithumb_bot.errors.PaperStateDirError`).
     2. The dataset must carry at least ``WARMUP_CANDLE_COUNT + 1``
        candles (refusal via the returned result, not an exception).
-    3. Every candle's ``open_time_utc`` must be tz-aware UTC.
-    4. The candle sequence must be internally contiguous and must not
-       report a missing interval inside the processed range (refusal
-       via the returned result — this runner no longer delegates to
-       the shared backtest engine's own top-level entry point, so the
-       same gap/missing-interval detection lives here now).
-    5. Every candle's close boundary must be ``<= now_utc`` — an
+    3. ``config.strategy.lookback_candles`` must not require more
+       pre-paper candles than ``WARMUP_CANDLE_COUNT`` provides
+       (refusal via the returned result, code
+       ``InsufficientPaperLookbackError``).
+    4. Every candle's close boundary must be ``<= now_utc`` — an
        "incomplete" final candle refuses the same way.
-    6. If a prior ``state.json`` exists, every resume precondition
+    5. If a prior ``state.json`` exists, every resume precondition
        (warm-up hash, ``paper_start_ts_utc``, market, unit, hysteresis
        band, config/snapshot content hashes) must match exactly, else
-       :class:`~bithumb_bot.errors.ForwardDatasetDivergenceError`.
-    7. The buy-fee model's verification status must be usable.
-    8. The fresh-portfolio forward loop runs over ONLY the forward
-       candles, starting from an explicit ``CASH`` baseline (see
-       module docstring). A domain refusal there propagates via the
-       returned result — nothing is written.
-    9. The previously-recorded prefix of forward entries/signals MUST
+       :class:`~bithumb_bot.errors.ForwardDatasetDivergenceError`; then
+       every previously processed forward candle's recorded fingerprint
+       is re-verified against the current dataset, else
+       :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError`.
+    6. A REDUCED dataset (the last ``lookback - 1`` pre-paper candles
+       plus every forward candle) is built and handed to the
+       UNMODIFIED :func:`~bithumb_bot.backtest.runner.run_backtest`
+       exactly once (see module docstring). Every accounting rule —
+       contiguity, gap detection, tz-awareness, the buy-fee model's
+       verification status, fees, slippage, tick/step rounding,
+       min-order, notional cap, protective stop, stopped-out lockout —
+       is enforced inside that single call; a domain refusal there
+       propagates via the returned result, nothing is written.
+    7. The previously-recorded prefix of forward entries/signals MUST
        replay byte-for-byte from the freshly computed forward
        entries/signals, else
        :class:`~bithumb_bot.errors.FillReplayDivergenceError`.
-    10. Only the NEW entries/signals beyond that prefix are appended;
-        ``state.json`` is atomically replaced.
+    8. Only the NEW entries/signals beyond that prefix are appended;
+       ``state.json`` is atomically replaced.
 
     This function never reads any environment variable and never
     imports :mod:`bithumb_bot.broker` — it runs with zero credentials
@@ -746,22 +486,26 @@ def run_paper_session(
             code="InsufficientForwardCandlesError",
         )
 
-    step = timedelta(minutes=dataset.unit_minutes)
-    _assert_tz_aware_utc(dataset)
-
-    shape_refusal = _dataset_shape_refusal(dataset, step)
-    if shape_refusal is not None:
-        reason, code = shape_refusal
+    lookback = config.strategy.lookback_candles
+    pre_needed = lookback - 1
+    reduce_start_idx = WARMUP_CANDLE_COUNT - pre_needed
+    if reduce_start_idx < 0:
         return _refused(
             paper_start_ts_utc=None,
             forward_candle_count=0,
             resumed=False,
-            reason=reason,
-            code=code,
+            reason=(
+                f"config.strategy.lookback_candles={lookback} requires "
+                f"{pre_needed} pre-paper candles but WARMUP_CANDLE_COUNT="
+                f"{WARMUP_CANDLE_COUNT} only provides {WARMUP_CANDLE_COUNT} "
+                "— increase warmup or reduce lookback"
+            ),
+            code="InsufficientPaperLookbackError",
         )
 
     paper_start_ts_utc = dataset.candles[WARMUP_CANDLE_COUNT].open_time_utc
     forward_candle_count = len(dataset.candles) - WARMUP_CANDLE_COUNT
+    step = timedelta(minutes=dataset.unit_minutes)
 
     for candle in dataset.candles:
         close_boundary = candle.open_time_utc + step
@@ -786,34 +530,10 @@ def run_paper_session(
     prior_signal_count = resume_ctx.prior_signal_count
     prior_forward_candle_count = resume_ctx.prior_forward_candle_count
 
-    used_provisional, fee_rate, fee_reason, fee_code = _buy_fee_preflight(snapshot, config)
-    if fee_reason is not None:
-        return _refused(
-            paper_start_ts_utc=paper_start_ts_utc,
-            forward_candle_count=forward_candle_count,
-            resumed=resumed,
-            reason=fee_reason,
-            code=fee_code or "UnverifiedFeeModelError",
-        )
-    # Narrowed by construction: `_buy_fee_preflight` only returns a
-    # `None` reason/code alongside non-`None` (used_provisional, fee_rate).
-    assert used_provisional is not None
-    assert fee_rate is not None
+    reduced_dataset = _build_reduced_dataset(dataset, reduce_start_idx)
+    br = run_backtest(reduced_dataset, snapshot, config)
 
-    all_signals = generate_signals(dataset.candles, config.strategy)
-    forward_signals = _forward_only_signals(
-        dataset.candles, all_signals, WARMUP_CANDLE_COUNT, dataset.unit_minutes
-    )
-    forward_signals_by_source: dict[datetime, TargetState] = {
-        s.source_open_time_utc: s.target_state for s in forward_signals
-    }
-
-    loop_result = _run_forward_loop(
-        dataset, snapshot, config, forward_signals_by_source, fee_rate
-    )
-    state = loop_result.state
-
-    if loop_result.invalid_reason is not None:
+    if br.invalid_reason is not None:
         return PaperSessionResult(
             paper_start_ts_utc=paper_start_ts_utc,
             warmup_candle_count=WARMUP_CANDLE_COUNT,
@@ -822,28 +542,24 @@ def run_paper_session(
             forward_signal_count=0,
             new_fills_this_invocation=0,
             resumed=resumed,
-            invalid_reason=loop_result.invalid_reason,
-            refusal_code=loop_result.refusal_code,
-            backtest_result=BacktestResult(
-                final_state=state,
-                entries=state.entries,
-                final_cash_krw=state.cash_krw,
-                final_position_qty=state.position_qty,
-                active_protective_stop=loop_result.active_stop,
-                pending_intent=loop_result.pending_intent,
-                stopped_out_lockout=loop_result.stopped_out_lockout,
-                processed_first_open_utc=(
-                    paper_start_ts_utc if loop_result.processed_last is not None else None
-                ),
-                processed_last_open_utc=loop_result.processed_last,
-                invalid_reason=loop_result.invalid_reason,
-                refusal_code=loop_result.refusal_code,
-                used_provisional_fee_model=used_provisional,
-                signals_generated=len(forward_signals),
-            ),
+            invalid_reason=br.invalid_reason,
+            refusal_code=br.refusal_code,
+            backtest_result=br,
         )
 
-    forward_entries = state.entries
+    # Belt-and-suspenders filter: by construction every entry `run_backtest`
+    # produces over `reduced_dataset` is already forward-window (no signal
+    # can fire before the reduced dataset's last `lookback` candles are
+    # seen), but this filter is a cheap, defensive guard against any future
+    # change to the strategy's warm-up rule.
+    forward_entries = tuple(
+        e for e in br.entries if e.source_open_time_utc >= paper_start_ts_utc
+    )
+    forward_signals = tuple(
+        s
+        for s in generate_signals(reduced_dataset.candles, config.strategy)
+        if s.source_open_time_utc >= paper_start_ts_utc
+    )
 
     fills_path = state_dir / "fills.jsonl"
     on_disk_fills = read_jsonl(fills_path)
@@ -861,7 +577,8 @@ def run_paper_session(
     _assert_prefix_replay(recomputed_prior_signals, on_disk_signals, signals_path)
     new_signals = forward_signals[prior_signal_count:]
 
-    # D2 (D-erv): fingerprint-first sequencing — see helper docstring.
+    # D2 (D-erv, tightened D-no0): fingerprint-first sequencing — see
+    # helper docstring.
     _append_new_fingerprints(state_dir, dataset, prior_forward_candle_count)
 
     for entry in new_entries:
@@ -892,8 +609,8 @@ def run_paper_session(
         forward_candle_count=forward_candle_count,
         forward_signal_count=len(forward_signals),
         forward_fill_count=len(forward_entries),
-        final_cash_krw=format(state.cash_krw.value, "f"),
-        final_position_qty=format(state.position_qty.value, "f"),
+        final_cash_krw=format(br.final_cash_krw.value, "f"),
+        final_position_qty=format(br.final_position_qty.value, "f"),
     )
     save_state(state_dir, new_state)
 
@@ -907,23 +624,7 @@ def run_paper_session(
         resumed=resumed,
         invalid_reason=None,
         refusal_code=None,
-        backtest_result=BacktestResult(
-            final_state=state,
-            entries=forward_entries,
-            final_cash_krw=state.cash_krw,
-            final_position_qty=state.position_qty,
-            active_protective_stop=loop_result.active_stop,
-            pending_intent=loop_result.pending_intent,
-            stopped_out_lockout=loop_result.stopped_out_lockout,
-            processed_first_open_utc=(
-                paper_start_ts_utc if loop_result.processed_last is not None else None
-            ),
-            processed_last_open_utc=loop_result.processed_last,
-            invalid_reason=None,
-            refusal_code=None,
-            used_provisional_fee_model=used_provisional,
-            signals_generated=len(forward_signals),
-        ),
+        backtest_result=br,
     )
 
 
