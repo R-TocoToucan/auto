@@ -16,10 +16,16 @@ Sequence (fail-closed at every step):
    across invocations.
 3. Load Gate 1, the ``CandleDataset``, the ``SnapshotV1``, and the
    research config — identical loaders to ``research_backtest.py``.
-4. Engineering-smoke pre-Gate-2 cap enforcement — the SAME ~40-line
-   block as ``research_backtest.py``, duplicated deliberately rather
-   than factored into a shared helper (see the inline comment at that
-   block for why).
+4. Paper-only notional-scale relaxation. Unlike ``research_backtest``,
+   this handler does NOT compare the configured ``max_notional_krw``
+   or the intended pre-fee order size against Gate 1's
+   ``provisional_engineering_notional_krw``. Every report is stamped
+   ``notional_scale_status = "unvalidated_engineering"`` and keeps the
+   ``engineering_smoke`` identity with both eligibility flags false.
+   The execution engine's own configured ``max_notional_krw`` check
+   still binds every simulated fill. Gate 2's own frozen-cap refusal
+   (``max_validated_notional_krw`` set) is a separate check and is
+   retained.
 5. Pin ``hysteresis_bps == "75"`` — the paper handler is bound to the
    frozen ``price_over_sma`` baseline's cost-derived hysteresis band;
    any other configured value refuses rather than silently running
@@ -31,10 +37,11 @@ Sequence (fail-closed at every step):
    ``--out``, distinct from the durable ``--state-dir`` audit trail.
 
 The report carries ``run_purpose="engineering_smoke"``,
-``selection_eligible=false``, ``holdout_eligible=false`` — same
-engineering-smoke identity as ``bt research backtest`` — plus a
-``"paper"`` block describing the warm-up/forward split and the
-resume/audit-trail state.
+``selection_eligible=false``, ``holdout_eligible=false``, and
+``notional_scale_status="unvalidated_engineering"`` — the paper
+runner's engineering-smoke identity — plus a ``"paper"`` block
+describing the warm-up/forward split and the resume/audit-trail
+state.
 """
 
 from __future__ import annotations
@@ -74,6 +81,7 @@ from bithumb_bot.paper.runner import run_paper_session
 _REPORT_SCHEMA_VERSION = 1
 _RUN_PURPOSE_ENGINEERING_SMOKE = "engineering_smoke"
 _PINNED_HYSTERESIS_BPS = Decimal("75")
+_NOTIONAL_SCALE_STATUS_UNVALIDATED = "unvalidated_engineering"
 
 
 def _decimal_str(d: Decimal) -> str:
@@ -149,6 +157,7 @@ def _build_report(
         "run_purpose": _RUN_PURPOSE_ENGINEERING_SMOKE,
         "selection_eligible": False,
         "holdout_eligible": False,
+        "notional_scale_status": _NOTIONAL_SCALE_STATUS_UNVALIDATED,
         "mode": "paper",
         "inputs": {
             "dataset_sha256": sha256_hex(dataset_bytes),
@@ -367,12 +376,16 @@ def handler(args: Any) -> int:
     config_bytes = config_path.read_bytes()
 
     # -------------------------------------------------------------------
-    # Engineering-smoke cap enforcement (pre-Gate-2) — deliberately
-    # duplicated from `research_backtest.py` rather than factored into a
-    # shared helper (ponytail mode: divergent safety-critical code paths
-    # sharing a helper risk a single subtle bug affecting both handlers
-    # identically and silently; duplication here keeps each auditable on
-    # its own).
+    # Paper-only notional-scale relaxation:
+    # The two provisional-cap comparisons (configured max_notional_krw
+    # vs. Gate 1 provisional; intended pre-fee order vs. Gate 1
+    # provisional) that live in `research_backtest.py` are intentionally
+    # NOT enforced here. Every paper report is labeled
+    # `notional_scale_status = "unvalidated_engineering"` and remains
+    # `run_purpose = "engineering_smoke"` with both eligibility flags
+    # false — the execution engine's own `max_notional_krw` enforcement
+    # is unchanged and still binds every simulated fill. Gate 2's own
+    # frozen-cap check (below) is separate and retained.
     # -------------------------------------------------------------------
     provisional_cap = gate1.provisional_engineering_notional_krw
     if gate1.max_validated_notional_krw is not None:
@@ -381,33 +394,6 @@ def handler(args: Any) -> int:
             "max_validated_notional_krw; strategy evaluation requires a "
             "distinct selection handler with calibration provenance "
             "(missing: gate2_selection_handler).",
-            file=sys.stderr,
-        )
-        return 1
-    configured_cap = backtest_config.execution.max_notional_krw.value
-    if configured_cap > provisional_cap:
-        print(
-            f"bt paper run: refusal: engineering-smoke "
-            f"max_notional_krw={_decimal_str(configured_cap)} exceeds "
-            f"Gate 1 provisional_engineering_notional_krw="
-            f"{_decimal_str(provisional_cap)}. Pre-Gate-2 runs cannot "
-            "raise the cap by TOML (missing: gate2_validated_cap).",
-            file=sys.stderr,
-        )
-        return 1
-    fee_bid = snapshot.fee_rates.bid
-    target_debit = (
-        backtest_config.starting_cash_krw.value
-        * backtest_config.target_sleeve_fraction
-    )
-    intended_pre_fee = target_debit / (Decimal("1") + fee_bid)
-    if intended_pre_fee > provisional_cap:
-        print(
-            f"bt paper run: refusal: intended pre-fee order "
-            f"{_decimal_str(intended_pre_fee)} exceeds Gate 1 "
-            f"provisional_engineering_notional_krw="
-            f"{_decimal_str(provisional_cap)}. Reduce starting_cash_krw or "
-            "target_sleeve_fraction (missing: gate2_validated_cap).",
             file=sys.stderr,
         )
         return 1
@@ -509,6 +495,10 @@ def handler(args: Any) -> int:
     sha_prefix = sha256_hex(out_path.read_bytes())[:12]
     print(f"report:                          {out_path}")
     print(f"run_purpose:                     {_RUN_PURPOSE_ENGINEERING_SMOKE}")
+    print(
+        f"notional_scale_status:           "
+        f"{_NOTIONAL_SCALE_STATUS_UNVALIDATED}"
+    )
     print("selection_eligible:              False")
     print("holdout_eligible:                 False")
     print(f"resumed:                         {session.resumed}")
