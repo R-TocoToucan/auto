@@ -85,6 +85,27 @@ Exception surface added incrementally by phase:
                                           (derived fills/signals stream
                                           diverges) — this fires strictly
                                           on candle-CONTENT mutation.
+- Quick task 260912-no0 (D-no0, D2 tightening):
+  * `ProcessedPrefixMutatedError`'s coverage is BROADENED (same class,
+                                          same operational contract) to
+                                          also fire on: a
+                                          `candle_fingerprints.jsonl`
+                                          row-count disagreement against
+                                          `prior_state.
+                                          forward_candle_count`, a
+                                          recorded row's position/order
+                                          disagreeing with the current
+                                          dataset's forward candle order,
+                                          the last recorded row
+                                          disagreeing with `prior_state.
+                                          last_processed_open_utc`
+                                          ("tail"), a malformed row
+                                          (non-JSON, or missing/invalid
+                                          `open_time_utc`/`sha256` key),
+                                          and the sidecar file being
+                                          entirely absent while
+                                          `prior_state.
+                                          forward_candle_count > 0`.
 """
 
 from __future__ import annotations
@@ -442,21 +463,49 @@ class FillReplayDivergenceError(BithumbBotError):
 
 
 class ProcessedPrefixMutatedError(BithumbBotError):
-    """Raised on resume when a previously processed forward candle no longer
-    matches its recorded per-candle SHA-256 fingerprint (or is missing from
-    the current dataset entirely).
+    """Raised on resume when the recorded processed-candle audit trail
+    (``candle_fingerprints.jsonl``) fails any of the following fail-closed
+    checks (D-erv, tightened by D-no0). Every check runs BEFORE any file
+    mutation on the resumed invocation, so a fired refusal never partially
+    rewrites the audit trail. Fires on any of:
+
+    * mutation                   — a previously processed forward
+                                    candle's SHA-256 fingerprint no
+                                    longer matches its recorded value
+                                    (candle-CONTENT mutation).
+    * missing-in-current-dataset — a previously processed candle is
+                                    absent from the current dataset
+                                    entirely.
+    * row-count-mismatch         — the recorded row count disagrees with
+                                    ``prior_state.forward_candle_count``
+                                    (the trail was truncated, duplicated,
+                                    or extended).
+    * order-mismatch              — a recorded row's position disagrees
+                                    with the current dataset's forward
+                                    candle order at that same index
+                                    (rows were reordered).
+    * tail-mismatch                — the last recorded row's
+                                    ``open_time_utc`` disagrees with
+                                    ``prior_state.last_processed_open_utc``.
+    * malformed-row                — a non-JSON line, or a line missing
+                                    (or with a malformed) ``open_time_utc``
+                                    or ``sha256`` key.
+    * missing-file                  — ``candle_fingerprints.jsonl`` is
+                                    entirely absent while ``prior_state.
+                                    forward_candle_count > 0``.
 
     Distinct from ForwardDatasetDivergenceError (which fires on
     invocation-level input drift: warmup slice hash, config, snapshot,
     market, unit, hysteresis) and from FillReplayDivergenceError (which
     fires when the derived fills/signals stream diverges from the on-disk
-    audit trail). This exception fires strictly on CANDLE-CONTENT
-    mutation of the processed prefix, catching the case where a stale
-    mirror or manual edit rewrites a completed candle whose derived
-    signal/fill happens to coincidentally still match.
+    audit trail). This exception fires strictly on the audit trail's own
+    integrity — a mutated/reordered/truncated/malformed/missing sidecar
+    whose DERIVED signal/fill happens to coincidentally still match would
+    otherwise slip past that looser fills/signals replay check.
 
-    Message names the offending candle open_time_utc; no dataset bytes are
-    spliced into the exception surface.
+    Message names the offending value(s) (row index, open_time_utc,
+    counts, or 1-based line number); no dataset bytes are spliced into
+    the exception surface.
     """
 
 

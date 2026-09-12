@@ -21,10 +21,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Literal
 
 import pytest
 
+from bithumb_bot.artifact.canonical import sha256_hex
 from bithumb_bot.backtest.config import BacktestConfig
 from bithumb_bot.bithumb_spec.snapshot import FeeRates, Minimums, SnapshotV1
 from bithumb_bot.core.money import Money
@@ -180,3 +182,26 @@ def flat_warmup_and_forward_dataset() -> tuple[CandleDataset, SnapshotV1, Backte
     snapshot = make_snapshot()
     config = make_backtest_config()
     return dataset, snapshot, config
+
+
+_STATE_DIR_ARTIFACT_NAMES = (
+    "state.json",
+    "state.json.sha256",
+    "fills.jsonl",
+    "signals.jsonl",
+    "candle_fingerprints.jsonl",
+)
+
+
+def snapshot_state_dir_hashes(state_dir: Path) -> dict[str, str | None]:
+    """Return ``{filename: sha256_hex(bytes) | None}`` for every paper
+    session artifact file in ``state_dir`` (``None`` if the file is
+    absent). Used by D2 adversarial tests to assert a FAILED resume
+    (one that raises :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError`)
+    did not mutate the state-dir any further beyond whatever corruption
+    the test itself injected before the resume attempt."""
+    result: dict[str, str | None] = {}
+    for name in _STATE_DIR_ARTIFACT_NAMES:
+        path = state_dir / name
+        result[name] = sha256_hex(path.read_bytes()) if path.is_file() else None
+    return result

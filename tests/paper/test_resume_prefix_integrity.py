@@ -31,6 +31,7 @@ from typing import Any
 
 import pytest
 
+from bithumb_bot.artifact.canonical import canonical_bytes, write_with_sidecar
 from bithumb_bot.core.money import Money, Qty
 from bithumb_bot.errors import ProcessedPrefixMutatedError
 from bithumb_bot.market_data.candles import Candle
@@ -38,7 +39,7 @@ from bithumb_bot.market_data.dataset import CandleDataset
 from bithumb_bot.paper.runner import WARMUP_CANDLE_COUNT, run_paper_session
 from bithumb_bot.paper.state import candle_fingerprint, load_state
 
-from .conftest import STEP, T0, flat, make_dataset
+from .conftest import STEP, T0, flat, make_dataset, snapshot_state_dir_hashes
 
 #: Known-answer fixture candle — computed once via a REPL run of
 #: `candle_fingerprint` over this EXACT candle; any future accidental
@@ -47,6 +48,10 @@ from .conftest import STEP, T0, flat, make_dataset
 _SHA256_HEX_LEN = 64
 
 _KNOWN_ANSWER_HASH = "ac5e1ce3236fa78eb83292726ad621c744693c731ead15fd1e3675653bfd29f6"
+
+#: Several D2 adversarial tests below (truncate/reorder/malformed-second-
+#: line) need at least two recorded fingerprint rows to manipulate.
+_MIN_ROWS_FOR_MANIPULATION = 2
 
 
 def _known_answer_candle() -> Candle:
@@ -296,3 +301,191 @@ class TestCoincidentSignalMutationStillFailsClosed:
 
         assert (tmp_path / "state.json").read_bytes() == state_bytes
         assert (tmp_path / "fills.jsonl").read_bytes() == fills_bytes
+
+
+class TestTightenedPrefixIntegrity:
+    """D-no0 D2 tightening: five additional corruption modes (missing-
+    file, malformed, row-count, order+content, tail), each enforced
+    fail-closed BEFORE any file mutation on the resumed invocation. Every
+    test captures the state-dir's per-file SHA-256 hash-map AFTER
+    injecting its corruption but BEFORE the failing resume, then
+    re-asserts byte-equality after ``pytest.raises`` — proving the
+    FAILED resume itself did not further mutate anything."""
+
+    def test_row_count_mismatch_fails_closed_truncated(
+        self, tmp_path: Path, paper_fixture: tuple[CandleDataset, object, object]
+    ) -> None:
+        dataset, snapshot, config = paper_fixture
+        now = dataset.candles[-1].open_time_utc + STEP
+        run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        fp_path = tmp_path / "candle_fingerprints.jsonl"
+        lines = fp_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) >= _MIN_ROWS_FOR_MANIPULATION
+        fp_path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+        mutated_before = snapshot_state_dir_hashes(tmp_path)
+
+        with pytest.raises(
+            ProcessedPrefixMutatedError,
+            match=r"has (\d+) rows but state\.json reports forward_candle_count=(\d+)",
+        ):
+            run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        assert snapshot_state_dir_hashes(tmp_path) == mutated_before
+
+    def test_row_count_mismatch_fails_closed_extended(
+        self, tmp_path: Path, paper_fixture: tuple[CandleDataset, object, object]
+    ) -> None:
+        dataset, snapshot, config = paper_fixture
+        now = dataset.candles[-1].open_time_utc + STEP
+        run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        fp_path = tmp_path / "candle_fingerprints.jsonl"
+        lines = fp_path.read_text(encoding="utf-8").splitlines()
+        assert lines
+        fp_path.write_text("\n".join([*lines, lines[-1]]) + "\n", encoding="utf-8")
+        mutated_before = snapshot_state_dir_hashes(tmp_path)
+
+        with pytest.raises(
+            ProcessedPrefixMutatedError,
+            match=r"has (\d+) rows but state\.json reports forward_candle_count=(\d+)",
+        ):
+            run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        assert snapshot_state_dir_hashes(tmp_path) == mutated_before
+
+    def test_order_mismatch_fails_closed(
+        self, tmp_path: Path, paper_fixture: tuple[CandleDataset, object, object]
+    ) -> None:
+        dataset, snapshot, config = paper_fixture
+        now = dataset.candles[-1].open_time_utc + STEP
+        run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        fp_path = tmp_path / "candle_fingerprints.jsonl"
+        lines = fp_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) >= _MIN_ROWS_FOR_MANIPULATION
+        lines[0], lines[1] = lines[1], lines[0]
+        fp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        mutated_before = snapshot_state_dir_hashes(tmp_path)
+
+        with pytest.raises(
+            ProcessedPrefixMutatedError,
+            match=r"row 0 open_time_utc=.* != current dataset candle\[\d+\]\.open_time_utc=",
+        ):
+            run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        assert snapshot_state_dir_hashes(tmp_path) == mutated_before
+
+    def test_tail_mismatch_fails_closed(
+        self, tmp_path: Path, paper_fixture: tuple[CandleDataset, object, object]
+    ) -> None:
+        dataset, snapshot, config = paper_fixture
+        now = dataset.candles[-1].open_time_utc + STEP
+        run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        # Recorded rows match the CURRENT dataset's forward candles in
+        # order AND content (so the order+content check passes) -- but
+        # state.json's last_processed_open_utc disagrees with the last
+        # recorded row. This is impossible under normal operation (both
+        # are written from the same source); reproduce it by doctoring
+        # state.json (+ regenerating its sidecar so SidecarHashMismatchError
+        # does NOT fire first) to declare a last_processed_open_utc one
+        # step EARLIER than the true last recorded row's open_time.
+        state_path = tmp_path / "state.json"
+        parsed_state: dict[str, Any] = json.loads(state_path.read_text(encoding="utf-8"))
+        true_last = datetime.fromisoformat(parsed_state["last_processed_open_utc"])
+        doctored_last = (true_last - STEP).isoformat()
+        parsed_state["last_processed_open_utc"] = doctored_last
+        write_with_sidecar(state_path, canonical_bytes(parsed_state))
+        mutated_before = snapshot_state_dir_hashes(tmp_path)
+
+        with pytest.raises(
+            ProcessedPrefixMutatedError,
+            match=re.escape(f"!= state.json last_processed_open_utc={doctored_last}"),
+        ):
+            run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        assert snapshot_state_dir_hashes(tmp_path) == mutated_before
+
+    def test_malformed_row_non_json_fails_closed(
+        self, tmp_path: Path, paper_fixture: tuple[CandleDataset, object, object]
+    ) -> None:
+        dataset, snapshot, config = paper_fixture
+        now = dataset.candles[-1].open_time_utc + STEP
+        run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        fp_path = tmp_path / "candle_fingerprints.jsonl"
+        lines = fp_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) >= _MIN_ROWS_FOR_MANIPULATION
+        lines[1] = "this is not json"
+        fp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        mutated_before = snapshot_state_dir_hashes(tmp_path)
+
+        with pytest.raises(ProcessedPrefixMutatedError, match=r"line 2 is malformed"):
+            run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        assert snapshot_state_dir_hashes(tmp_path) == mutated_before
+
+    def test_malformed_row_missing_key_fails_closed(
+        self, tmp_path: Path, paper_fixture: tuple[CandleDataset, object, object]
+    ) -> None:
+        dataset, snapshot, config = paper_fixture
+        now = dataset.candles[-1].open_time_utc + STEP
+        run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        fp_path = tmp_path / "candle_fingerprints.jsonl"
+        lines = fp_path.read_text(encoding="utf-8").splitlines()
+        assert lines
+        row = json.loads(lines[0])
+        del row["sha256"]
+        lines[0] = json.dumps(row, sort_keys=True, separators=(",", ":"))
+        fp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        mutated_before = snapshot_state_dir_hashes(tmp_path)
+
+        with pytest.raises(ProcessedPrefixMutatedError, match=r"line \d+ is malformed"):
+            run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        assert snapshot_state_dir_hashes(tmp_path) == mutated_before
+
+    def test_malformed_row_bad_sha256_hex_fails_closed(
+        self, tmp_path: Path, paper_fixture: tuple[CandleDataset, object, object]
+    ) -> None:
+        dataset, snapshot, config = paper_fixture
+        now = dataset.candles[-1].open_time_utc + STEP
+        run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        fp_path = tmp_path / "candle_fingerprints.jsonl"
+        lines = fp_path.read_text(encoding="utf-8").splitlines()
+        assert lines
+        row = json.loads(lines[0])
+        row["sha256"] = "not-a-hex-digest"
+        lines[0] = json.dumps(row, sort_keys=True, separators=(",", ":"))
+        fp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        mutated_before = snapshot_state_dir_hashes(tmp_path)
+
+        with pytest.raises(ProcessedPrefixMutatedError, match=r"line \d+ is malformed"):
+            run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        assert snapshot_state_dir_hashes(tmp_path) == mutated_before
+
+    def test_missing_fingerprint_file_fails_closed(
+        self, tmp_path: Path, paper_fixture: tuple[CandleDataset, object, object]
+    ) -> None:
+        dataset, snapshot, config = paper_fixture
+        now = dataset.candles[-1].open_time_utc + STEP
+        run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        fp_path = tmp_path / "candle_fingerprints.jsonl"
+        assert fp_path.is_file()
+        fp_path.unlink()
+        mutated_before = snapshot_state_dir_hashes(tmp_path)
+        assert mutated_before["candle_fingerprints.jsonl"] is None
+
+        with pytest.raises(ProcessedPrefixMutatedError) as exc_info:
+            run_paper_session(dataset, snapshot, config, tmp_path, now_utc=now)
+
+        message = str(exc_info.value)
+        assert re.search(r"candle_fingerprints\.jsonl is missing", message)
+        assert re.search(r"forward_candle_count=\d+", message)
+
+        assert snapshot_state_dir_hashes(tmp_path) == mutated_before

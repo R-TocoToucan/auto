@@ -227,7 +227,17 @@ def candle_fingerprint(candle: Candle) -> str:
 
 
 def read_fingerprints(state_dir: Path) -> list[dict[str, str]]:
-    """Thin wrapper over ``read_jsonl(state_dir / "candle_fingerprints.jsonl")``."""
+    """Thin wrapper over ``read_jsonl(state_dir / "candle_fingerprints.jsonl")``.
+
+    Raises a bare ``ValueError`` on a malformed line (see
+    :func:`read_jsonl`) — callers that need the tightened D2 resume-time
+    integrity checks (missing-file / malformed-row / row-count /
+    order+content / tail, each raising a dedicated
+    :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError` with a
+    precise, 1-based line number) use
+    :mod:`bithumb_bot.paper.runner`'s own line-by-line verifier instead
+    of this helper.
+    """
     return read_jsonl(state_dir / "candle_fingerprints.jsonl")
 
 

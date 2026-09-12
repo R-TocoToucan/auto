@@ -66,6 +66,8 @@ have transitioned it out of the initial CASH state. No
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -92,11 +94,16 @@ from bithumb_bot.paper.state import (
     append_jsonl,
     candle_fingerprint,
     load_state,
-    read_fingerprints,
     read_jsonl,
     save_state,
 )
 from bithumb_bot.strategy import StrategySignal, generate_signals
+
+#: 64-char lowercase hex — the exact shape of a SHA-256 digest as
+#: recorded by :func:`~bithumb_bot.paper.state.candle_fingerprint`. Used
+#: by the D2 malformed-row check to reject a fingerprint row whose
+#: ``sha256`` value is not even shaped like a digest.
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 #: Fixed at the production ``price_over_sma`` baseline's warm-up length
 #: (``BaselineStrategyConfig.PRODUCTION_WARMUP_CANDLES``). Not read from
@@ -318,13 +325,75 @@ def _resume_divergence_check(
         )
 
 
+def _parse_fingerprint_line(raw_line: str, line_no: int) -> dict[str, str]:
+    """Parse one ``candle_fingerprints.jsonl`` line into ``{"open_time_utc":
+    ..., "sha256": ...}``, raising
+    :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError` (never a bare
+    ``json.JSONDecodeError`` / ``KeyError`` / ``TypeError`` /
+    ``AttributeError``) on any structural deviation. ``line_no`` is
+    1-based for operator-facing messages — deliberately does NOT delegate
+    to :func:`~bithumb_bot.paper.state.read_jsonl`, which raises a bare
+    ``ValueError`` on a malformed line instead of the dedicated exception
+    class the resume-time contract requires.
+    """
+    try:
+        parsed = json.loads(raw_line)
+    except json.JSONDecodeError as exc:
+        raise ProcessedPrefixMutatedError(
+            f"candle_fingerprints.jsonl line {line_no} is malformed: "
+            f"not valid JSON ({exc})"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ProcessedPrefixMutatedError(
+            f"candle_fingerprints.jsonl line {line_no} is malformed: "
+            f"expected a JSON object, got {type(parsed).__name__}"
+        )
+    open_time_utc = parsed.get("open_time_utc")
+    if not isinstance(open_time_utc, str):
+        raise ProcessedPrefixMutatedError(
+            f"candle_fingerprints.jsonl line {line_no} is malformed: "
+            "missing or non-string 'open_time_utc' key"
+        )
+    try:
+        datetime.fromisoformat(open_time_utc)
+    except ValueError as exc:
+        raise ProcessedPrefixMutatedError(
+            f"candle_fingerprints.jsonl line {line_no} is malformed: "
+            f"'open_time_utc' is not a valid ISO-8601 timestamp ({exc})"
+        ) from exc
+    sha256_value = parsed.get("sha256")
+    if not isinstance(sha256_value, str) or not _SHA256_HEX_RE.fullmatch(sha256_value):
+        raise ProcessedPrefixMutatedError(
+            f"candle_fingerprints.jsonl line {line_no} is malformed: "
+            "missing or invalid 'sha256' key (expected a 64-char lowercase "
+            "hex string)"
+        )
+    return {"open_time_utc": open_time_utc, "sha256": sha256_value}
+
+
 def _verify_processed_prefix_fingerprints(
     state_dir: Path, dataset: CandleDataset, prior_state: PaperState
 ) -> None:
-    """Raise :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError` if any
-    previously processed forward candle's recorded SHA-256 fingerprint
-    (``candle_fingerprints.jsonl``) no longer matches the current dataset,
-    or if a previously processed candle is missing from it entirely.
+    """Raise :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError` on
+    any of the tightened D2 resume-time integrity checks (D-erv,
+    tightened D-no0), run IN THIS EXACT ORDER, each BEFORE any file
+    mutation on the resumed invocation:
+
+    1. missing-file   — ``candle_fingerprints.jsonl`` absent while
+                         ``prior_state.forward_candle_count > 0``.
+    2. malformed rows — a non-JSON line, or a line missing (or with a
+                        malformed) ``open_time_utc`` / ``sha256`` key.
+    3. row-count      — the recorded row count disagrees with
+                         ``prior_state.forward_candle_count`` (the trail
+                         was truncated, duplicated, or extended).
+    4. order + content — each recorded row must match the current
+                         dataset's forward candle at the SAME position,
+                         both in ``open_time_utc`` (order) and SHA-256
+                         fingerprint (content); a recorded row beyond the
+                         current dataset's length is "missing from the
+                         current dataset".
+    5. tail           — the last recorded row's ``open_time_utc`` must
+                         match ``prior_state.last_processed_open_utc``.
 
     Runs AFTER :func:`_resume_divergence_check` (an invocation-level input
     drift — warmup slice hash, config, snapshot, market, unit, hysteresis —
@@ -335,29 +404,70 @@ def _verify_processed_prefix_fingerprints(
     coincidentally still match would otherwise slip past that looser
     fills/signals replay check.
     """
-    recorded = read_fingerprints(state_dir)
-    if not recorded and prior_state.forward_candle_count > 0:
+    fp_path = state_dir / "candle_fingerprints.jsonl"
+
+    # 1. missing-file.
+    if prior_state.forward_candle_count > 0 and not fp_path.is_file():
         raise ProcessedPrefixMutatedError(
+            f"candle_fingerprints.jsonl is missing at {fp_path!s} but "
             "prior state.json reports forward_candle_count="
-            f"{prior_state.forward_candle_count} but candle_fingerprints.jsonl "
-            "is empty — audit trail incomplete"
+            f"{prior_state.forward_candle_count} — audit trail incomplete"
         )
-    current_by_open_time = {c.open_time_utc: c for c in dataset.candles}
-    for row in recorded:
-        open_time = _parse_missing_utc(row["open_time_utc"])
-        current = current_by_open_time.get(open_time)
-        if current is None:
+
+    raw_lines = fp_path.read_text(encoding="utf-8").splitlines() if fp_path.is_file() else []
+
+    # 2. malformed rows — parsed line-by-line; first structural failure
+    # wins, so checks 3-5 below never see a row that failed to parse.
+    recorded: list[dict[str, str]] = [
+        _parse_fingerprint_line(line, i + 1) for i, line in enumerate(raw_lines) if line
+    ]
+
+    # 3. row-count.
+    if len(recorded) != prior_state.forward_candle_count:
+        raise ProcessedPrefixMutatedError(
+            f"candle_fingerprints.jsonl has {len(recorded)} rows but "
+            "state.json reports forward_candle_count="
+            f"{prior_state.forward_candle_count} — audit trail truncated, "
+            "duplicated, or extended"
+        )
+
+    # 4. per-row order + content, position-parallel against the CURRENT
+    # dataset's forward candles — supersedes a dict-keyed lookup, which
+    # would silently accept reordering.
+    for i, row in enumerate(recorded):
+        expected_idx = WARMUP_CANDLE_COUNT + i
+        recorded_open_time = _parse_missing_utc(row["open_time_utc"])
+        if expected_idx >= len(dataset.candles):
             raise ProcessedPrefixMutatedError(
-                f"previously processed forward candle at {open_time.isoformat()} "
-                "is missing from the current dataset — refusing to append "
-                "onto a candle prefix whose content changed"
+                f"previously processed forward candle at "
+                f"{recorded_open_time.isoformat()} is missing from the "
+                "current dataset — refusing to append onto a candle "
+                "prefix whose content changed"
             )
-        if candle_fingerprint(current) != row["sha256"]:
+        expected_open_time = dataset.candles[expected_idx].open_time_utc
+        if recorded_open_time != expected_open_time:
             raise ProcessedPrefixMutatedError(
-                f"previously processed forward candle at {open_time.isoformat()} "
-                "has mutated (SHA-256 mismatch) — refusing to append onto a "
-                "candle prefix whose content changed"
+                f"candle_fingerprints.jsonl row {i} open_time_utc="
+                f"{recorded_open_time.isoformat()} != current dataset "
+                f"candle[{expected_idx}].open_time_utc="
+                f"{expected_open_time.isoformat()} — audit trail reordered "
+                "or dataset diverged"
             )
+        if candle_fingerprint(dataset.candles[expected_idx]) != row["sha256"]:
+            raise ProcessedPrefixMutatedError(
+                f"candle at {expected_open_time.isoformat()} has mutated "
+                "(SHA-256 mismatch) — refusing to append onto a candle "
+                "prefix whose content changed"
+            )
+
+    # 5. tail.
+    if recorded and recorded[-1]["open_time_utc"] != prior_state.last_processed_open_utc:
+        raise ProcessedPrefixMutatedError(
+            "candle_fingerprints.jsonl last row open_time_utc="
+            f"{recorded[-1]['open_time_utc']} != state.json "
+            f"last_processed_open_utc={prior_state.last_processed_open_utc} "
+            "— tail divergence"
+        )
 
 
 @dataclass(frozen=True)
