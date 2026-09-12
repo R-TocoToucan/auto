@@ -200,6 +200,7 @@ def _build_report(
             "unit_minutes": backtest_config.strategy.unit_minutes,
             "market": backtest_config.strategy.market,
             "hysteresis_bps": _decimal_str(backtest_config.strategy.hysteresis_bps),
+            "hysteresis_application": "entry_only",
         },
         "backtest_config": {
             "starting_cash_krw": _decimal_str(backtest_config.starting_cash_krw.value),

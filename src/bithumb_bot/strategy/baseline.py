@@ -21,23 +21,22 @@ Rule (engineering research candidate; Gate 2 unfrozen):
 * Compute the arithmetic SMA of the most recent ``lookback_candles``
   closes, including the current completed candle.
 * Let ``h = config.hysteresis_bps`` (Decimal, ``0 <= h < 10000``).
-  The band is ``[SMA * (1 - h/10000), SMA * (1 + h/10000)]``.
+  ``h`` is the **entry-only** buffer: entry sits at
+  ``SMA * (1 + h/10000)``; exit sits at the SMA itself (no buffer).
 * State transitions (initial state is ``CASH``):
 
     CASH -> LONG   iff   close > SMA * (1 + h / 10000)
-    LONG -> CASH   iff   close < SMA * (1 - h / 10000)
+    LONG -> CASH   iff   close < SMA
 
-  Otherwise (including equality at either boundary) the current state
-  is retained. Equal-hysteresis at zero (``h = 0``) collapses the
-  band to the SMA itself — equality still retains the current state,
-  which differs from an earlier zero-width crossover that snapped to
-  CASH on equality.
+  Equality at either boundary retains the current state. At ``h = 0``
+  the entry boundary collapses onto the SMA and both directions reduce
+  to strict-inequality-vs-SMA (equality still retains state).
 
 To keep the comparison exact and avoid any Decimal-division precision
 worry, each boundary is evaluated as an integer/Decimal multiplication:
 
     Entry:  close * lookback * 10000  >  running_sum * (10000 + h)
-    Exit:   close * lookback * 10000  <  running_sum * (10000 - h)
+    Exit:   close * lookback * 10000  <  running_sum * 10000
 
 The ``sma_value`` on the emitted signal is only computed on the
 candles where a transition actually fires, so the reported SMA is
@@ -175,8 +174,7 @@ def generate_signals(
     step = timedelta(minutes=config.unit_minutes)
     lookback_d = Decimal(lookback)
     hysteresis_bps = config.hysteresis_bps
-    upper_factor = _BPS_DENOMINATOR + hysteresis_bps  # 10000 + h
-    lower_factor = _BPS_DENOMINATOR - hysteresis_bps  # 10000 - h
+    upper_factor = _BPS_DENOMINATOR + hysteresis_bps  # 10000 + h (entry only)
 
     signals: list[StrategySignal] = []
     current_state: TargetState = _INITIAL_STATE
@@ -194,9 +192,10 @@ def generate_signals(
             continue
 
         close_value = candle.close.value
-        # Exact-integer form of the band comparison — no division:
+        # Exact-integer form of the band comparison — no division.
+        # Hysteresis is applied on ENTRY only; exit is at the SMA:
         #   Entry: close * lookback * 10000 > sum * (10000 + h)
-        #   Exit:  close * lookback * 10000 < sum * (10000 - h)
+        #   Exit:  close * lookback * 10000 < sum * 10000
         # Equality at either boundary retains the current state.
         scaled_close = close_value * lookback_d * _BPS_DENOMINATOR
 
@@ -206,7 +205,7 @@ def generate_signals(
             else:
                 new_state = "CASH"
         else:  # LONG
-            if scaled_close < running_sum * lower_factor:
+            if scaled_close < running_sum * _BPS_DENOMINATOR:
                 new_state = "CASH"
             else:
                 new_state = "LONG"

@@ -514,42 +514,47 @@ class TestHysteresisRetentionInsideBand:
 
 
 class TestHysteresisExit:
-    def test_no_cash_exit_inside_lower_band(self) -> None:
-        # Get into LONG, then place close just above lower boundary.
+    """Exit rule: ``close < SMA`` (no hysteresis buffer on exit).
+
+    Hysteresis is now the entry-only buffer. The old "no cash exit
+    inside lower band" behavior is intentionally gone — any close
+    strictly below the SMA exits LONG, even when it would have sat
+    inside the old symmetric lower band.
+    """
+
+    def test_cash_exit_when_close_below_sma_even_inside_old_lower_band(
+        self,
+    ) -> None:
+        # Get into LONG, then place close inside the OLD symmetric lower
+        # band but still strictly below the SMA.
         candles = _series(["100", "100", "100", "200", "149"])
         # i=3: sma=133.33 upper=134.33 close=200 → LONG entry.
-        # i=4: window [100,200,149] sum=449 sma=149.667 lower=149.667*0.9925=148.545..
-        #      close=149 > 148.545 → retain LONG (no exit).
+        # i=4: window [100,200,149] sum=449 sma=149.667
+        #      Old lower band lower=148.545 (close=149 would retain LONG).
+        #      New rule: close=149 < sma=149.667 → CASH exit fires.
         signals = generate_signals(candles, _cfg(3, hysteresis_bps="75"))
-        assert [s.target_state for s in signals] == ["LONG"]
+        assert [s.target_state for s in signals] == ["LONG", "CASH"]
 
-    def test_cash_exit_strictly_below_lower_boundary(self) -> None:
-        # Same entry, but close just below the lower boundary.
-        # window [100,200,148] sum=448 sma=149.333 lower=149.333*0.9925=148.198..
-        # close=148 < 148.198 → CASH exit fires.
+    def test_cash_exit_strictly_below_sma(self) -> None:
+        # window [100,200,148] sum=448 sma=149.333 close=148 < sma → CASH.
         candles = _series(["100", "100", "100", "200", "148"])
         signals = generate_signals(candles, _cfg(3, hysteresis_bps="75"))
         assert [s.target_state for s in signals] == ["LONG", "CASH"]
         assert signals[1].source_open_time_utc == T0 + STEP * 4
 
-    def test_equality_at_lower_boundary_retains_long(self) -> None:
-        # Build symbolic equality at the FINAL candle while keeping the
-        # intermediate windows LONG:
-        #   Target final window sum=30000 with close=9925 →
-        #     scaled_close = 9925 * 3 * 10000    = 297_750_000
-        #     lower_rhs    = 30000 * (10000-75) = 297_750_000  (equal)
-        #   Intermediate windows must satisfy scaled_close >= lower_rhs.
-        # Series [1000, 10075, 10075, 10075, 10000, 9925]:
-        #   i=2 window sum=21150, close=10075 → LONG entry (well above upper).
-        #   i=3 window sum=30225, close=10075 → retain LONG (302.25M > 299.98M).
-        #   i=4 window sum=30150, close=10000 → retain LONG (300M > 299.24M).
-        #   i=5 window sum=30000, close=9925  → equality → retain LONG.
-        candles = _series([
-            "1000", "10075", "10075", "10075", "10000", "9925",
-        ])
+    def test_equality_at_sma_retains_long(self) -> None:
+        # Exit rule is now `close < SMA` strict. Equality retains state.
+        # Construct a LONG state, then land the next candle exactly on
+        # the SMA:
+        #   Series [100, 100, 200, 150]:
+        #     i=2 sum=400 sma=133.33.. close=200 → LONG entry
+        #         (upper_rhs = 400*10075 = 4_030_000;
+        #          scaled_close = 200*3*10000 = 6_000_000 > upper_rhs).
+        #     i=3 sum=450 sma=150     close=150 → equality → retain LONG
+        #         (exit_rhs = 450*10000 = 4_500_000;
+        #          scaled_close = 150*3*10000 = 4_500_000; NOT strictly <).
+        candles = _series(["100", "100", "200", "150"])
         signals = generate_signals(candles, _cfg(3, hysteresis_bps="75"))
-        # Only the LONG entry fires; equality at the lower boundary does
-        # NOT emit a CASH transition.
         assert [s.target_state for s in signals] == ["LONG"]
 
 

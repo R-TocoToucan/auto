@@ -217,6 +217,7 @@ def _build_report(
             "hysteresis_bps": _decimal_str(
                 backtest_config.strategy.hysteresis_bps
             ),
+            "hysteresis_application": "entry_only",
         },
         "backtest_config": {
             "starting_cash_krw": _decimal_str(
