@@ -63,6 +63,7 @@ from bithumb_bot.errors import (
     FillReplayDivergenceError,
     ForwardDatasetDivergenceError,
     PaperStateDirError,
+    ProcessedPrefixMutatedError,
     SidecarHashMismatchError,
 )
 from bithumb_bot.execution.readiness import check_execution_readiness
@@ -453,6 +454,7 @@ def handler(args: Any) -> int:
         PaperStateDirError,
         ForwardDatasetDivergenceError,
         FillReplayDivergenceError,
+        ProcessedPrefixMutatedError,
         SidecarHashMismatchError,
     ) as exc:
         print(

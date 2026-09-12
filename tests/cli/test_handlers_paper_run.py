@@ -133,6 +133,79 @@ def _write_dataset(tmp_path: Path, *, name: str = "dataset.json") -> Path:
     return target
 
 
+def _write_dataset_with_mutated_last_high(
+    tmp_path: Path, *, name: str = "dataset_mutated.json"
+) -> Path:
+    """Same as `_write_dataset` except the LAST forward candle's `high`
+    is bumped by 1 ("200000000" -> "200000001") -- proves the CLI
+    handler now catches `ProcessedPrefixMutatedError` on resume against
+    a byte-mutated processed prefix."""
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    candles: list[Candle] = []
+    for i in range(WARMUP_CANDLE_COUNT):
+        candles.append(
+            Candle(
+                market="KRW-BTC",
+                unit_minutes=UNIT,
+                open_time_utc=start + i * _STEP,
+                open="100000000",
+                high="100000000",
+                low="100000000",
+                close="100000000",
+                volume="1",
+                quote_volume="100000000",
+            )
+        )
+    candles.append(
+        Candle(
+            market="KRW-BTC",
+            unit_minutes=UNIT,
+            open_time_utc=start + WARMUP_CANDLE_COUNT * _STEP,
+            open="100000000",
+            high="200000000",
+            low="100000000",
+            close="200000000",
+            volume="1",
+            quote_volume="100000000",
+        )
+    )
+    candles.append(
+        Candle(
+            market="KRW-BTC",
+            unit_minutes=UNIT,
+            open_time_utc=start + (WARMUP_CANDLE_COUNT + 1) * _STEP,
+            open="200000000",
+            high="200000001",
+            low="200000000",
+            close="200000000",
+            volume="1",
+            quote_volume="100000000",
+        )
+    )
+    end = candles[-1].open_time_utc + _STEP
+    dataset = CandleDataset(
+        schema_version=1,
+        venue="bithumb",
+        market="KRW-BTC",
+        unit_minutes=UNIT,
+        requested_start_utc=candles[0].open_time_utc.isoformat(),
+        requested_end_utc=end.isoformat(),
+        fetched_at_utc="2026-01-01T00:00:00+00:00",
+        candles=candles,
+        missing_intervals_utc=[],
+        provenance=DatasetProvenance(
+            source_endpoint="/v1/candles/minutes/240",
+            base_url="https://api.bithumb.com",
+            pages_fetched=1,
+            page_cursors_kst=[],
+            effective_end_utc=end.isoformat(),
+        ),
+    )
+    target = tmp_path / name
+    write_dataset_with_sidecar(dataset, target)
+    return target
+
+
 def _write_config(
     tmp_path: Path,
     *,
@@ -369,3 +442,64 @@ class TestPaperRunHelp:
         out = capsys.readouterr().out
         for flag in ("--dataset", "--snapshot", "--config", "--state-dir", "--out"):
             assert flag in out
+
+
+class TestPaperRunProcessedPrefixMutationRefused:
+    def test_mutated_forward_candle_on_resume_refuses_cleanly(
+        self, _env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dataset = _write_dataset(tmp_path)
+        snapshot = _write_snapshot(tmp_path)
+        config = _write_config(tmp_path)
+        state_dir = tmp_path / "state"
+        out1 = tmp_path / "report1.json"
+
+        rc1 = _run(
+            dataset=dataset, snapshot=snapshot, config=config,
+            state_dir=state_dir, out=out1,
+        )
+        assert rc1 == 0, capsys.readouterr()
+        assert (state_dir / "state.json").is_file()
+        fp_path = state_dir / "candle_fingerprints.jsonl"
+        assert fp_path.is_file()
+        expected_forward_candle_count = 2
+        assert (
+            len(fp_path.read_text(encoding="utf-8").splitlines())
+            == expected_forward_candle_count
+        )
+
+        signals_path = state_dir / "signals.jsonl"
+        state_before = (state_dir / "state.json").read_bytes()
+        fills_before = (state_dir / "fills.jsonl").read_bytes()
+        fingerprints_before = fp_path.read_bytes()
+        signals_before = (
+            signals_path.read_bytes() if signals_path.is_file() else None
+        )
+
+        mutated_dataset = _write_dataset_with_mutated_last_high(tmp_path)
+        out2 = tmp_path / "report2.json"
+
+        rc2 = _run(
+            dataset=mutated_dataset, snapshot=snapshot, config=config,
+            state_dir=state_dir, out=out2,
+        )
+        assert rc2 == 1
+
+        err = capsys.readouterr().err
+        assert "ProcessedPrefixMutatedError" in err
+        last_forward_open_time_utc = datetime(2026, 1, 1, 0, 0, tzinfo=UTC) + (
+            WARMUP_CANDLE_COUNT + 1
+        ) * _STEP
+        assert last_forward_open_time_utc.isoformat() in err
+        assert "Traceback" not in err
+
+        assert not out2.exists()
+        assert not out2.with_name(out2.name + ".sha256").exists()
+
+        assert (state_dir / "state.json").read_bytes() == state_before
+        assert (state_dir / "fills.jsonl").read_bytes() == fills_before
+        assert fp_path.read_bytes() == fingerprints_before
+        if signals_before is not None:
+            assert signals_path.read_bytes() == signals_before
+        else:
+            assert not signals_path.is_file()
