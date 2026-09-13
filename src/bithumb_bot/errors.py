@@ -357,6 +357,24 @@ class NotionalCapExceededError(BithumbBotError):
     """
 
 
+class ProtectiveIntentNotExecutableError(BithumbBotError):
+    """Raised when ``execute_intent`` is handed a non-``strategy_signal`` intent.
+
+    ``execute_intent`` implements the strategy-signal fill path exclusively:
+    fill at the next candle's open with same-candle refusal, tick snap and
+    slippage, min-order/notional-cap/cash/position ledger deltas — all keyed
+    to the signal-close boundary. A protective-stop intent
+    (``protective_stop_gap`` / ``protective_stop_intrabar``) does not ride
+    that boundary and must go through
+    :func:`bithumb_bot.execution.stop.evaluate_protective_stop`, which uses
+    the shared sell builder with the trigger-price base and the correct
+    timing semantics. Routing a protective intent here would misattribute
+    the fill as ``execution_reason="strategy_signal"`` at the next candle
+    and, for gap intents, drive the same-candle guard from an equality
+    that no longer signals a bug. Fail closed instead.
+    """
+
+
 class UnverifiedFeeModelError(BithumbBotError):
     """Raised when the snapshot's fee-model verification status is
     inadequate for the requested side.
@@ -585,6 +603,7 @@ __all__ = [
     "PaperStateDirError",
     "ProcessedPrefixMutatedError",
     "ProhibitedCredentialDetectedError",
+    "ProtectiveIntentNotExecutableError",
     "PublicRestErrorResponseError",
     "PublicRestNotVerifiedError",
     "SecretsFileInsideRepoError",

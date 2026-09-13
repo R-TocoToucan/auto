@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from bithumb_bot.broker.mock import (
+    BrokerClockError,
     BrokerStateCorrupt,
     FillExceedsIntent,
     MockBroker,
@@ -103,50 +104,48 @@ def test_canonical_decimal_folds_signed_and_scaled_zeros() -> None:
     assert _canonical_decimal(Decimal("-0.000")) == canonical_zero
 
 
-def test_client_order_id_rejects_naive_timestamp() -> None:
+def test_naive_timestamp_rejected_at_construction() -> None:
+    # OrderIntent's __post_init__ now refuses naive timestamps universally,
+    # so the invariant fires before any hasher/submit boundary can see them.
     naive_open = datetime(2026, 1, 1, 0, 0)  # no tzinfo
-    intent = OrderIntent(
-        side="buy",
-        source_open_time_utc=naive_open,
-        unit_minutes=240,
-        signal_ts_utc=naive_open + timedelta(minutes=240),
-        requested_notional_krw=Money.from_str("100000"),
-        requested_qty=None,
-    )
-    with pytest.raises(ValueError, match="naive datetime"):
-        deterministic_client_order_id(intent)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        OrderIntent(
+            side="buy",
+            source_open_time_utc=naive_open,
+            unit_minutes=240,
+            signal_ts_utc=naive_open + timedelta(minutes=240),
+            requested_notional_krw=Money.from_str("100000"),
+            requested_qty=None,
+        )
 
 
-def test_client_order_id_rejects_non_finite_decimal() -> None:
-    # OrderIntent's own positivity check catches -Infinity/NaN before the
-    # canonical hasher sees them; +Infinity satisfies "> 0" so it is the
-    # case where the canonical function's fail-closed guard actually fires.
-    inf_intent = OrderIntent(
-        side="buy",
-        source_open_time_utc=BASE_OPEN_UTC,
-        unit_minutes=240,
-        signal_ts_utc=BASE_OPEN_UTC + timedelta(minutes=240),
-        requested_notional_krw=Money(Decimal("Infinity")),
-        requested_qty=None,
-    )
-    with pytest.raises(ValueError, match="non-finite"):
-        deterministic_client_order_id(inf_intent)
+def test_non_finite_decimal_rejected_at_construction() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        OrderIntent(
+            side="buy",
+            source_open_time_utc=BASE_OPEN_UTC,
+            unit_minutes=240,
+            signal_ts_utc=BASE_OPEN_UTC + timedelta(minutes=240),
+            requested_notional_krw=Money(Decimal("Infinity")),
+            requested_qty=None,
+        )
 
 
 def test_submit_with_naive_timestamp_fails_before_any_write(tmp_path: Path) -> None:
     broker = MockBroker(store_root=tmp_path)
     naive_open = datetime(2026, 1, 1, 0, 0)
-    bad = OrderIntent(
-        side="buy",
-        source_open_time_utc=naive_open,
-        unit_minutes=240,
-        signal_ts_utc=naive_open + timedelta(minutes=240),
-        requested_notional_krw=Money.from_str("100000"),
-        requested_qty=None,
-    )
-    with pytest.raises(ValueError):
-        broker.submit(bad)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        OrderIntent(
+            side="buy",
+            source_open_time_utc=naive_open,
+            unit_minutes=240,
+            signal_ts_utc=naive_open + timedelta(minutes=240),
+            requested_notional_krw=Money.from_str("100000"),
+            requested_qty=None,
+        )
+    # The broker sees nothing: construction fails before submit is reached.
     assert list((tmp_path / "orders").glob("*.json")) == []
+    _ = broker  # keep the mock broker referenced so lint is happy
 
 
 def test_submit_two_offsets_returns_same_order(tmp_path: Path) -> None:
@@ -673,3 +672,204 @@ def test_canceled_from_accepted_with_zero_fills_reloads_cleanly(
     assert reloaded.state == OrderState.CANCELED
     assert reloaded.filled_qty.value == Decimal("0")
     assert reloaded.filled_notional_krw.value == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# record_fill / reject argument validation — refuse BEFORE any mutation
+# ---------------------------------------------------------------------------
+
+
+def test_record_fill_infinite_qty_refuses_without_mutation(tmp_path: Path) -> None:
+    broker = MockBroker(store_root=tmp_path)
+    order = broker.submit(_buy("100000"))
+    path = tmp_path / "orders" / f"{order.client_order_id}.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="finite"):
+        broker.record_fill(
+            order.client_order_id,
+            Qty(Decimal("Infinity")),
+            Money.from_str("100"),
+        )
+    assert path.read_bytes() == before
+    # Reload verifies the on-disk file is still valid schema-v2.
+    reloaded = MockBroker(store_root=tmp_path).get(order.client_order_id)
+    assert reloaded is not None
+    assert reloaded.state == OrderState.ACCEPTED
+
+
+def test_record_fill_infinite_notional_refuses_without_mutation(
+    tmp_path: Path,
+) -> None:
+    broker = MockBroker(store_root=tmp_path)
+    order = broker.submit(_sell("1.0"))
+    path = tmp_path / "orders" / f"{order.client_order_id}.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="finite"):
+        broker.record_fill(
+            order.client_order_id,
+            Qty.from_str("0.1"),
+            Money(Decimal("Infinity")),
+        )
+    assert path.read_bytes() == before
+    reloaded = MockBroker(store_root=tmp_path).get(order.client_order_id)
+    assert reloaded is not None
+
+
+@pytest.mark.parametrize(
+    "qty_value",
+    [Decimal("NaN"), Decimal("0"), Decimal("-0.001")],
+)
+def test_record_fill_nan_zero_negative_qty_refuses_cleanly(
+    tmp_path: Path, qty_value: Decimal
+) -> None:
+    broker = MockBroker(store_root=tmp_path)
+    order = broker.submit(_buy("100000"))
+    path = tmp_path / "orders" / f"{order.client_order_id}.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        broker.record_fill(
+            order.client_order_id,
+            Qty(qty_value),
+            Money.from_str("100"),
+        )
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "notional_value",
+    [Decimal("NaN"), Decimal("0"), Decimal("-1")],
+)
+def test_record_fill_nan_zero_negative_notional_refuses_cleanly(
+    tmp_path: Path, notional_value: Decimal
+) -> None:
+    broker = MockBroker(store_root=tmp_path)
+    order = broker.submit(_buy("100000"))
+    path = tmp_path / "orders" / f"{order.client_order_id}.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        broker.record_fill(
+            order.client_order_id,
+            Qty.from_str("0.0001"),
+            Money(notional_value),
+        )
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("bad_complete", [0, 1, "true", None])
+def test_record_fill_non_bool_complete_refuses(
+    tmp_path: Path, bad_complete: object
+) -> None:
+    broker = MockBroker(store_root=tmp_path)
+    order = broker.submit(_sell("1.0"))
+    path = tmp_path / "orders" / f"{order.client_order_id}.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="bool"):
+        broker.record_fill(
+            order.client_order_id,
+            Qty.from_str("0.1"),
+            Money.from_str("10000"),
+            complete=bad_complete,  # type: ignore[arg-type]
+        )
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "bad_reason",
+    [None, 0, 1, "", "   ", "\t\n "],
+)
+def test_reject_non_string_or_blank_reason_refuses(
+    tmp_path: Path, bad_reason: object
+) -> None:
+    broker = MockBroker(store_root=tmp_path)
+    order = broker.submit(_buy("100000"))
+    path = tmp_path / "orders" / f"{order.client_order_id}.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        broker.reject(order.client_order_id, reason=bad_reason)  # type: ignore[arg-type]
+    assert path.read_bytes() == before
+    # Order stays ACCEPTED and reloadable.
+    reloaded = MockBroker(store_root=tmp_path).get(order.client_order_id)
+    assert reloaded is not None
+    assert reloaded.state == OrderState.ACCEPTED
+
+
+# ---------------------------------------------------------------------------
+# History clock validation — refuse before any persistence
+# ---------------------------------------------------------------------------
+
+
+def test_naive_clock_refuses_first_submit(tmp_path: Path) -> None:
+    def naive_now() -> datetime:
+        return datetime(2026, 1, 1, 0, 0)  # no tzinfo
+
+    broker = MockBroker(store_root=tmp_path, now_utc=naive_now)
+    with pytest.raises(BrokerClockError, match="naive"):
+        broker.submit(_buy("100000"))
+    assert list((tmp_path / "orders").glob("*.json")) == []
+
+
+def test_regressing_clock_refuses_transition_without_mutation(
+    tmp_path: Path,
+) -> None:
+    """A record_fill whose clock is BEFORE the accepted timestamp must
+    refuse fail-closed and leave the accepted order file byte-identical."""
+    times = iter(
+        [
+            datetime(2026, 1, 1, 12, 0, tzinfo=UTC),  # submit
+            datetime(2026, 1, 1, 11, 0, tzinfo=UTC),  # record_fill (regresses)
+        ]
+    )
+
+    def stepping_now() -> datetime:
+        return next(times)
+
+    broker = MockBroker(store_root=tmp_path, now_utc=stepping_now)
+    order = broker.submit(_sell("1.0"))
+    path = tmp_path / "orders" / f"{order.client_order_id}.json"
+    before = path.read_bytes()
+    with pytest.raises(BrokerClockError, match="regressed"):
+        broker.record_fill(
+            order.client_order_id,
+            Qty.from_str("0.1"),
+            Money.from_str("10000"),
+        )
+    assert path.read_bytes() == before
+    # Reload confirms the accepted order is still valid on disk.
+    reloaded = MockBroker(store_root=tmp_path).get(order.client_order_id)
+    assert reloaded is not None
+    assert reloaded.state == OrderState.ACCEPTED
+
+
+def test_non_utc_aware_clock_is_normalized_to_utc(tmp_path: Path) -> None:
+    """A valid tz-aware non-UTC clock must be normalized to UTC on disk
+    and survive a restart."""
+    kst = timezone(timedelta(hours=9))
+    submit_at = datetime(2026, 1, 1, 21, 0, tzinfo=kst)  # 12:00 UTC
+    fill_at = datetime(2026, 1, 1, 22, 0, tzinfo=kst)  # 13:00 UTC
+    times = iter([submit_at, fill_at])
+
+    def kst_now() -> datetime:
+        return next(times)
+
+    broker = MockBroker(store_root=tmp_path, now_utc=kst_now)
+    order = broker.submit(_sell("1.0"))
+    broker.record_fill(
+        order.client_order_id,
+        Qty.from_str("0.1"),
+        Money.from_str("10000"),
+    )
+
+    on_disk = json.loads(
+        (tmp_path / "orders" / f"{order.client_order_id}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    # Both history entries persisted as UTC — the offset was normalized.
+    for entry in on_disk["history"]:
+        assert entry["at_utc"].endswith("+00:00")
+
+    fresh = MockBroker(store_root=tmp_path)
+    reloaded = fresh.get(order.client_order_id)
+    assert reloaded is not None
+    assert reloaded.history[0].at_utc == submit_at.astimezone(UTC)
+    assert reloaded.history[-1].at_utc == fill_at.astimezone(UTC)

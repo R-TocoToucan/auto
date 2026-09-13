@@ -49,7 +49,7 @@ from bithumb_bot.broker.state import (
 from bithumb_bot.core.money import Money, Qty
 from bithumb_bot.execution.intent import OrderIntent
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _CLIENT_ORDER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -67,6 +67,17 @@ class InvalidStateTransition(BrokerError):
 
 class FillExceedsIntent(BrokerError):
     """A record_fill would push cumulative fill above the intent's request."""
+
+
+class BrokerClockError(BrokerError):
+    """The injected ``now_utc`` clock produced an unusable timestamp.
+
+    Fires when ``now_utc()`` returns a naive datetime, a value whose
+    tzinfo yields no UTC offset, or a value strictly less than the
+    previously persisted history timestamp for this order (a regressing
+    clock). Refused BEFORE any file mutation so the on-disk order file
+    stays byte-identical and reloadable.
+    """
 
 
 def _default_now() -> datetime:
@@ -136,6 +147,12 @@ def _canonical_intent_bytes(intent: OrderIntent) -> bytes:
             if intent.requested_qty is not None
             else None
         ),
+        "reason": intent.reason,
+        "trigger_price": (
+            _canonical_decimal(intent.trigger_price.value)
+            if intent.trigger_price is not None
+            else None
+        ),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -190,6 +207,10 @@ class MockBroker:
                     f"from submitted intent"
                 )
             return existing
+        # Validate + normalize the clock BEFORE constructing the accepted
+        # StateTransition so a naive datetime never reaches disk. There is
+        # no prior history for a first submit, so `previous_at` is None.
+        at_utc = self._read_clock(previous_at=None)
         order = BrokerOrder(
             client_order_id=cid,
             intent=intent,
@@ -201,7 +222,7 @@ class MockBroker:
                 StateTransition(
                     from_state=None,
                     to_state=OrderState.ACCEPTED,
-                    at_utc=self._now(),
+                    at_utc=at_utc,
                 ),
             ),
         )
@@ -250,15 +271,38 @@ class MockBroker:
         """Apply one simulated fill, transitioning to partial or filled.
 
         ``complete=True`` transitions to ``filled`` (terminal); otherwise
-        the target is ``partially_filled``. Fill amounts must be > 0.
+        the target is ``partially_filled``. Fill amounts must be finite
+        and > 0 — a NaN or Infinity is refused BEFORE any read of the
+        persisted order so ``decimal.InvalidOperation`` cannot leak past
+        the boundary and the target file remains byte-identical.
+        ``complete`` must be an exact ``bool`` (not a truthy int or
+        other coercible value).
+
         Refused BEFORE any write if the cumulative fill would exceed
         the intent's request: buy side is bounded by
         ``requested_notional_krw``; sell side by ``requested_qty``.
         """
+        # Argument validation runs BEFORE any order read/mutation. NaN
+        # or Infinity would leak `decimal.InvalidOperation` from the
+        # `<= 0` comparison; check `is_finite()` first.
+        if not fill_qty.value.is_finite():
+            raise ValueError(f"fill_qty must be finite, got {fill_qty.value}")
         if fill_qty.value <= 0:
-            raise ValueError("fill_qty must be > 0")
+            raise ValueError(f"fill_qty must be > 0, got {fill_qty.value}")
+        if not fill_notional_krw.value.is_finite():
+            raise ValueError(
+                f"fill_notional_krw must be finite, got {fill_notional_krw.value}"
+            )
         if fill_notional_krw.value <= 0:
-            raise ValueError("fill_notional_krw must be > 0")
+            raise ValueError(
+                f"fill_notional_krw must be > 0, got {fill_notional_krw.value}"
+            )
+        # `bool` is a subclass of `int`; refuse any int (0/1) or other
+        # truthy value that would otherwise silently drive the transition.
+        if type(complete) is not bool:  # noqa: E721
+            raise ValueError(
+                f"complete must be a bool, got {type(complete).__name__}"
+            )
         order = self._require(client_order_id)
         target = OrderState.FILLED if complete else OrderState.PARTIALLY_FILLED
         self._require_transition(order.state, target)
@@ -266,6 +310,8 @@ class MockBroker:
         new_qty_value = order.filled_qty.value + fill_qty.value
         new_notional_value = order.filled_notional_krw.value + fill_notional_krw.value
         _require_within_intent(order.intent, new_qty_value, new_notional_value)
+
+        at_utc = self._read_clock(previous_at=order.history[-1].at_utc)
 
         new = BrokerOrder(
             client_order_id=order.client_order_id,
@@ -279,7 +325,7 @@ class MockBroker:
                 StateTransition(
                     from_state=order.state,
                     to_state=target,
-                    at_utc=self._now(),
+                    at_utc=at_utc,
                 ),
             ),
         )
@@ -287,9 +333,19 @@ class MockBroker:
         return new
 
     def reject(self, client_order_id: str, reason: str) -> BrokerOrder:
-        """Move an accepted order to rejected (venue-refused)."""
-        if not reason:
-            raise ValueError("reason must be a non-empty string")
+        """Move an accepted order to rejected (venue-refused).
+
+        ``reason`` must be an exact ``str`` (not int, None, or other
+        coerced type) with at least one non-whitespace character. A
+        whitespace-only or empty reason is refused BEFORE any order
+        read/mutation so the target file remains byte-identical.
+        """
+        if type(reason) is not str:  # noqa: E721
+            raise ValueError(
+                f"reason must be str, got {type(reason).__name__}"
+            )
+        if not reason.strip():
+            raise ValueError("reason must contain non-whitespace content")
         return self._transition_no_fill(
             client_order_id,
             target=OrderState.REJECTED,
@@ -307,6 +363,7 @@ class MockBroker:
     ) -> BrokerOrder:
         order = self._require(client_order_id)
         self._require_transition(order.state, target)
+        at_utc = self._read_clock(previous_at=order.history[-1].at_utc)
         new = BrokerOrder(
             client_order_id=order.client_order_id,
             intent=order.intent,
@@ -323,12 +380,39 @@ class MockBroker:
                 StateTransition(
                     from_state=order.state,
                     to_state=target,
-                    at_utc=self._now(),
+                    at_utc=at_utc,
                 ),
             ),
         )
         self._write(new)
         return new
+
+    def _read_clock(self, *, previous_at: datetime | None) -> datetime:
+        """Read ``now_utc()``, verify it's usable, and normalize to UTC.
+
+        Fail-closed before the caller writes anything:
+
+        * A naive datetime (no tzinfo, or a tzinfo whose ``utcoffset`` is
+          ``None``) is refused — history timestamps cross disk as ISO
+          strings and a naive value would produce an ambiguous record.
+        * A value strictly less than ``previous_at`` regresses the audit
+          trail. ``previous_at`` is normalized to UTC for the comparison
+          so a valid non-UTC aware clock is not spuriously rejected.
+        """
+        candidate = self._now()
+        if candidate.tzinfo is None or candidate.tzinfo.utcoffset(candidate) is None:
+            raise BrokerClockError(
+                f"now_utc() returned a naive datetime: {candidate.isoformat()!r}"
+            )
+        normalized = candidate.astimezone(UTC)
+        if previous_at is not None:
+            previous_utc = previous_at.astimezone(UTC)
+            if normalized < previous_utc:
+                raise BrokerClockError(
+                    f"now_utc() regressed: {normalized.isoformat()} < "
+                    f"previous history at {previous_utc.isoformat()}"
+                )
+        return normalized
 
     def _require(self, client_order_id: str) -> BrokerOrder:
         if not _CLIENT_ORDER_ID_RE.fullmatch(client_order_id):
@@ -422,6 +506,12 @@ def _encode_order(order: BrokerOrder) -> dict[str, Any]:
             "requested_qty": (
                 str(intent.requested_qty.value)
                 if intent.requested_qty is not None
+                else None
+            ),
+            "reason": intent.reason,
+            "trigger_price": (
+                str(intent.trigger_price.value)
+                if intent.trigger_price is not None
                 else None
             ),
         },
@@ -622,10 +712,16 @@ def _decode_intent(data: dict[str, Any], *, source: Path) -> OrderIntent:
         signal_ts_str = data["signal_ts_utc"]
         requested_notional_str = data["requested_notional_krw"]
         requested_qty_str = data["requested_qty"]
+        reason = data["reason"]
+        trigger_price_str = data["trigger_price"]
     except KeyError as exc:
         raise BrokerStateCorrupt(f"{source}: intent missing key {exc}") from exc
     if side not in ("buy", "sell"):
         raise BrokerStateCorrupt(f"{source}: intent.side invalid: {side!r}")
+    if not isinstance(reason, str):
+        raise BrokerStateCorrupt(
+            f"{source}: intent.reason must be string, got {type(reason).__name__}"
+        )
     if isinstance(unit_minutes, bool) or not isinstance(unit_minutes, int):
         raise BrokerStateCorrupt(f"{source}: intent.unit_minutes must be int")
     if not isinstance(source_open_str, str) or not isinstance(signal_ts_str, str):
@@ -665,6 +761,18 @@ def _decode_intent(data: dict[str, Any], *, source: Path) -> OrderIntent:
             )
         requested_qty = Qty(qty_value)
 
+    if trigger_price_str is None:
+        trigger_price: Money | None = None
+    else:
+        trigger_value = _decode_decimal(
+            trigger_price_str, field="intent.trigger_price", source=source
+        )
+        if trigger_value <= 0:
+            raise BrokerStateCorrupt(
+                f"{source}: intent.trigger_price must be > 0, got {trigger_value}"
+            )
+        trigger_price = Money(trigger_value)
+
     try:
         return OrderIntent(
             side=side,
@@ -673,6 +781,8 @@ def _decode_intent(data: dict[str, Any], *, source: Path) -> OrderIntent:
             signal_ts_utc=signal_ts,
             requested_notional_krw=requested_notional,
             requested_qty=requested_qty,
+            reason=reason,  # type: ignore[arg-type]
+            trigger_price=trigger_price,
         )
     except ValueError as exc:
         raise BrokerStateCorrupt(f"{source}: intent failed invariants: {exc}") from exc
@@ -756,6 +866,7 @@ def _validate_history(
 
 __all__ = [
     "SCHEMA_VERSION",
+    "BrokerClockError",
     "BrokerError",
     "BrokerStateCorrupt",
     "FillExceedsIntent",

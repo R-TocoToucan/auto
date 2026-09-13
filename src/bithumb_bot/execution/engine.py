@@ -48,6 +48,7 @@ from bithumb_bot.errors import (
     InsufficientPositionError,
     NoNextCandleError,
     NotionalCapExceededError,
+    ProtectiveIntentNotExecutableError,
     SnapshotValidationError,
     UnverifiedFeeModelError,
 )
@@ -79,6 +80,17 @@ def execute_intent(
     config: ExecutionConfig,
 ) -> tuple[LedgerState, LedgerEntry]:
     """Execute one ``intent`` against ``state``, producing a new state + entry."""
+    # Routing guard: this function is the STRATEGY-SIGNAL fill path. A
+    # protective-stop intent must go through evaluate_protective_stop
+    # (which uses the shared sell builder with the trigger-price base
+    # and the correct timing semantics); routing it here would fill it
+    # at the next candle and misattribute the entry as strategy_signal.
+    # Refuse fail-closed BEFORE any snapshot/dataset work.
+    if intent.reason != "strategy_signal":
+        raise ProtectiveIntentNotExecutableError(
+            f"execute_intent refuses reason={intent.reason!r}; protective "
+            "intents must go through evaluate_protective_stop"
+        )
     _check_fee_verification(intent.side, snapshot, config)
     _ensure_tick_available(snapshot)
     step = _resolve_step(snapshot, config)

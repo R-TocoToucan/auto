@@ -49,6 +49,7 @@ from bithumb_bot.errors import (
     InsufficientPositionError,
     NoNextCandleError,
     NotionalCapExceededError,
+    ProtectiveIntentNotExecutableError,
     SnapshotValidationError,
     UnverifiedFeeModelError,
 )
@@ -663,6 +664,55 @@ class TestSnapshotGating:
 # ---------------------------------------------------------------------------
 # Determinism
 # ---------------------------------------------------------------------------
+
+
+class TestProtectiveIntentRouting:
+    """execute_intent is the strategy-signal path only; protective intents
+    must go through evaluate_protective_stop. Both protective reasons must
+    fail closed BEFORE the same-candle assertion or any fill work runs."""
+
+    def _protective_kwargs(self, *, reason: str, trigger_ts: datetime) -> OrderIntent:
+        return OrderIntent(
+            side="sell",
+            source_open_time_utc=T0,
+            unit_minutes=UNIT,
+            signal_ts_utc=trigger_ts,
+            requested_notional_krw=None,
+            requested_qty=Qty(Decimal("0.1")),
+            reason=reason,  # type: ignore[arg-type]
+            trigger_price=Money(Decimal("48000000")),
+        )
+
+    def test_protective_stop_gap_refused_before_execution(self) -> None:
+        candle_t = _candle(T0)
+        candle_t1 = _candle(T0 + timedelta(minutes=UNIT))
+        intent = self._protective_kwargs(
+            reason="protective_stop_gap", trigger_ts=T0
+        )
+        state = LedgerState(
+            cash_krw=Money(Decimal("0")), position_qty=Qty(Decimal("0.1"))
+        )
+        with pytest.raises(ProtectiveIntentNotExecutableError):
+            execute_intent(
+                state, intent, _dataset([candle_t, candle_t1]),
+                _snapshot(), _config(),
+            )
+
+    def test_protective_stop_intrabar_refused_before_execution(self) -> None:
+        candle_t = _candle(T0)
+        candle_t1 = _candle(T0 + timedelta(minutes=UNIT))
+        intent = self._protective_kwargs(
+            reason="protective_stop_intrabar",
+            trigger_ts=T0 + timedelta(minutes=90),
+        )
+        state = LedgerState(
+            cash_krw=Money(Decimal("0")), position_qty=Qty(Decimal("0.1"))
+        )
+        with pytest.raises(ProtectiveIntentNotExecutableError):
+            execute_intent(
+                state, intent, _dataset([candle_t, candle_t1]),
+                _snapshot(), _config(),
+            )
 
 
 class TestDeterministicReplay:
