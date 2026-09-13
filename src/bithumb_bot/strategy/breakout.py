@@ -32,10 +32,11 @@ Determinism / no-look-ahead invariants (same guarantees as the baseline):
    ``generate_breakout_signals(candles[:N])`` for any ``M <= N``.
 3. Two invocations with identical inputs return equal tuples.
 
-``entry_breakout_level`` is computed at entry as
-``prior_120_high * Decimal("1.005")`` and carried on the emitted
-LONG signal so the exit rule can reference the exact same value that
-downstream persistence (state.json) will pin.
+``entry_breakout_level`` is the RAW ``prior_120_high`` at entry —
+NOT the buffered upper boundary. The 50-bps buffer participates only
+in the entry test; the exit rule compares ``close`` against the
+unbuffered prior high (via ``max(entry_breakout_level, prior_60_low)``).
+Downstream persistence pins this raw value.
 """
 
 from __future__ import annotations
@@ -78,12 +79,18 @@ class BreakoutSignal:
                                  do not need it).
         prior_low:               ``prior_60_low`` at this candle (or
                                  ``None`` on LONG-entry signals).
-        entry_breakout_level:    Exact Decimal breakout threshold
-                                 ``prior_120_high * Decimal("1.005")``
-                                 that was crossed to enter LONG. On a
-                                 LONG signal this is the level just
-                                 crossed; on a CASH signal this is the
-                                 level captured at the earlier entry.
+        entry_breakout_level:    Raw ``prior_120_high`` at entry —
+                                 unbuffered. On a LONG signal this is
+                                 the prior high that was crossed
+                                 (the buffered upper boundary sits at
+                                 ``entry_breakout_level *
+                                 (10000 + ENTRY_BUFFER_BPS) / 10000``,
+                                 but only the raw prior high is stored).
+                                 On a CASH signal this is the same raw
+                                 prior high captured at the earlier
+                                 entry, used directly in the exit rule
+                                 ``close < max(entry_breakout_level,
+                                 prior_60_low)``.
     """
 
     target_state: TargetState
@@ -140,8 +147,6 @@ def generate_breakout_signals(
 
     step = timedelta(minutes=BREAKOUT_UNIT_MINUTES)
     upper_factor = _BPS_DENOMINATOR + ENTRY_BUFFER_BPS  # 10000 + 50
-    # `prior_120_high * 1.005` — exact for any terminating-decimal price.
-    entry_multiplier: Decimal = upper_factor / _BPS_DENOMINATOR
 
     signals: list[BreakoutSignal] = []
     current_state: TargetState = _INITIAL_STATE
@@ -161,7 +166,9 @@ def generate_breakout_signals(
         if current_state == "CASH":
             # Entry: close * 10000 > prior_120_high * (10000 + 50).
             if close_value * _BPS_DENOMINATOR > prior_120_high * upper_factor:
-                new_level = prior_120_high * entry_multiplier
+                # entry_breakout_level = prior_120_high (raw, unbuffered).
+                # The 50-bps buffer applies to the entry test only.
+                new_level = prior_120_high
                 signals.append(
                     BreakoutSignal(
                         target_state="LONG",

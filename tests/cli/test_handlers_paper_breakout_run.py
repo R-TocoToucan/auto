@@ -195,6 +195,10 @@ class TestBreakoutRunGoldenPath:
         assert parsed["strategy"]["entry_buffer_bps"] == "50"
         assert parsed["strategy"]["entry_lookback_candles"] == 120
         assert parsed["strategy"]["exit_lookback_candles"] == 60
+        # 25-bps execution slippage — INDEPENDENT of the 50-bps entry
+        # buffer (both live on the same report but describe different
+        # physical concepts).
+        assert parsed["execution"]["slippage_bps_per_side"] == "25"
         # And the shadow identity.
         assert parsed["mode"] == "paper_breakout_shadow"
 

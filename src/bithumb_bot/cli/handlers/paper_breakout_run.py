@@ -67,11 +67,12 @@ from bithumb_bot.strategy.breakout import (
 
 _REPORT_SCHEMA_VERSION = 1
 _RUN_PURPOSE_ENGINEERING_SMOKE = "engineering_smoke"
-#: Fixed 50-bps per-side slippage for the shadow candidate. Independent
-#: of the strategy's entry-buffer bps (also 50) — same numeric value,
-#: different physical concept; the strategy buffer is a decision rule,
-#: the slippage is an execution cost model.
-_FIXED_SLIPPAGE_BPS: Decimal = Decimal("50")
+#: Fixed 25-bps per-side execution slippage for the shadow candidate.
+#: This is independent of the strategy's ``ENTRY_BUFFER_BPS`` (50 bps)
+#: — different physical concept: the 50-bps entry buffer is a strategy
+#: decision rule; the 25-bps slippage is an execution cost estimate.
+#: They must not be confused or held equal by accident.
+_FIXED_SLIPPAGE_BPS: Decimal = Decimal("25")
 
 
 def _dstr(d: Decimal) -> str:

@@ -90,8 +90,11 @@ class TestEntryBoundary:
         )
         signals = generate_breakout_signals(warmup + [breach])
         assert [s.target_state for s in signals] == ["LONG"]
-        # entry_breakout_level captured at entry: 100_000 * 1.005 = 100_500.
-        assert signals[0].entry_breakout_level == Decimal("100500")
+        # entry_breakout_level is the RAW prior_120_high (unbuffered).
+        # prior_120_high == 100_000 here — the 50-bps buffer participates
+        # only in the entry test, not in the persisted level.
+        assert signals[0].entry_breakout_level == Decimal("100000")
+        assert signals[0].prior_high == Decimal("100000")
 
     def test_close_just_below_boundary_retains_cash(self) -> None:
         warmup = _warmup_flat("100000")
@@ -121,36 +124,37 @@ class TestExitBoundary:
 
     def test_close_equal_to_max_of_entry_and_60low_retains_long(self) -> None:
         # After a big breakout (close=200_000), entry_breakout_level =
-        # 100_500. Prior-60-low from the exit candle's window = 100_000
-        # (all warmup candles were flat at 100_000 and the breakout
-        # candle's low is 100_000). Exit threshold =
-        # max(100_500, 100_000) = 100_500. A close of exactly 100_500
+        # RAW prior_120_high = 100_000. Prior-60-low from the exit
+        # candle's window = 100_000 (all warmup candles at 100_000 and
+        # the breakout candle's low is 100_000). Exit threshold =
+        # max(100_000, 100_000) = 100_000. A close of exactly 100_000
         # on the exit candle retains LONG (equality).
         series = self._enter_long_series()
-        # Add an exit-candidate candle at exactly the entry level.
         exit_candle = _candle(
             ENTRY_LOOKBACK_CANDLES + 1,
             open_="200000",
             high="200000",
-            low="100500",
-            close="100500",
+            low="100000",
+            close="100000",
         )
         signals = generate_breakout_signals(series + [exit_candle])
         assert [s.target_state for s in signals] == ["LONG"]
 
     def test_close_one_unit_below_exit_threshold_exits(self) -> None:
         series = self._enter_long_series()
+        # Exit threshold = max(entry_breakout_level=100_000,
+        # prior_60_low=100_000) = 100_000. close < 100_000 exits.
         exit_candle = _candle(
             ENTRY_LOOKBACK_CANDLES + 1,
             open_="200000",
             high="200000",
-            low="100499",
-            close="100499",
+            low="99999",
+            close="99999",
         )
         signals = generate_breakout_signals(series + [exit_candle])
         assert [s.target_state for s in signals] == ["LONG", "CASH"]
-        # Exit signal carries the same entry_breakout_level captured at entry.
-        assert signals[1].entry_breakout_level == Decimal("100500")
+        # Exit signal carries the same RAW entry_breakout_level.
+        assert signals[1].entry_breakout_level == Decimal("100000")
 
     def test_prior_60_low_ratchets_above_entry_level(self) -> None:
         # After entry, if the prior_60_low rises above the entry level,

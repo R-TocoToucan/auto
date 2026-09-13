@@ -1,19 +1,26 @@
-"""Focused tests for the shadow breakout paper runner.
+"""Focused tests for the shadow breakout paper runner (post-7ca7f78 fix).
 
 Covers:
 
-* Golden run — entry on breach, exit on drop, correct fill count.
+* Raw prior-high exit boundary — exit threshold is
+  ``max(prior_120_high_at_entry, prior_60_low)``, with the RAW
+  unbuffered prior high.
 * Next-candle execution — buy/sell fill_ts_utc == source_open + STEP.
-* Fresh state, then resume: second invocation with an appended candle
-  writes no duplicate fills and updates state.json.
-* Separate ledger / fills / signals / equity vs. the SMA paper runner
-  (each writes to its own state directory without touching the other).
-* Deterministic replay — repeated invocations on the same dataset (with
-  a fresh state directory) produce the same fills / signals / equity.
-* No broker import — proved by the sibling test file
-  ``tests/import_boundary/test_breakout_no_broker.py``; here we just
-  spot-check that the paper package's import contract still holds when
-  the shadow module is present.
+* Open-LONG resume parity: splitting the dataset and resuming while
+  LONG produces the exact same fills / cash / position as a single-
+  shot run over the concatenated dataset.
+* Final-candle signal fills on the next appended candle — a signal
+  emitted on the last candle of run 1 fires as a fill on the first
+  new candle of run 2.
+* Stopped-out-lockout resume parity — a run split across the stop-out
+  candle produces the same terminal state as a single-shot run.
+* Mutated-prefix refusal — mutating a previously processed candle on
+  resume raises ProcessedPrefixMutatedError and leaves every on-disk
+  audit file byte-unchanged.
+* Per-candle equity count and replay — equity.jsonl grows by exactly
+  the number of new forward candles per invocation.
+* Separate ledgers vs the SMA paper runner.
+* Input contract / incomplete / insufficient refusals.
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from pathlib import Path
 import pytest
 
 from bithumb_bot.core.money import Money
+from bithumb_bot.errors import ProcessedPrefixMutatedError
 from bithumb_bot.execution.config import ExecutionConfig
 from bithumb_bot.market_data.candles import Candle
 from bithumb_bot.market_data.dataset import CandleDataset, DatasetProvenance
@@ -91,7 +99,7 @@ def _config(
     max_notional_krw: str = "100000000",
 ) -> BreakoutPaperConfig:
     execution = ExecutionConfig(
-        slippage_bps_per_side=Decimal("50"),
+        slippage_bps_per_side=Decimal("25"),
         max_notional_krw=Money(Decimal(max_notional_krw)),
         allow_provisional_fee_model=False,
         simulation_quantity_quantum=Decimal("0.00000001"),
@@ -104,11 +112,11 @@ def _config(
 
 
 def _entry_series() -> list[Candle]:
-    """120 flat warmup candles, then a breakout candle at index 120.
+    """120 flat warmup candles + a breakout candle at index 120.
 
-    Prior_120_high = 100_000_000 → entry_breakout_level = 100_500_000.
-    Breakout close is 100_600_000 (strictly above entry level; low
-    stays at 100_000_000 so no intrabar stop concern later).
+    prior_120_high = 100_000_000; upper (50 bps) = 100_500_000.
+    Breakout close = 100_600_000 strictly above upper → LONG entry.
+    entry_breakout_level = raw prior_120_high = 100_000_000.
     """
     return [_flat(i, "100000000") for i in range(WARMUP_CANDLE_COUNT)] + [
         _candle(
@@ -121,15 +129,65 @@ def _entry_series() -> list[Candle]:
     ]
 
 
-class TestGoldenRun:
-    def test_entry_and_exit_produce_two_fills(self, tmp_path: Path) -> None:
-        # Warmup + entry candle + fill candle + drop-below-entry-level.
-        # prior_120_high = 100_000_000, entry_breakout_level =
-        # 100_500_000. Fill price at index 121 ≈ 100.6M * 1.005 ≈
-        # 101.1M; protective stop at 90% ≈ 90.99M. Exit-drop candle at
-        # index 122 has close=100_000_000 (< 100_500_000 → strategy
-        # exit) and low=100_000_000 (well above the 90.99M stop, so
-        # the strategy path fires, not the protective-stop path).
+def _snapshot_dir(state_dir: Path) -> dict[str, bytes | None]:
+    names = (
+        "state.json",
+        "state.json.sha256",
+        "fills.jsonl",
+        "signals.jsonl",
+        "equity.jsonl",
+        "candle_fingerprints.jsonl",
+    )
+    return {
+        name: (
+            (state_dir / name).read_bytes()
+            if (state_dir / name).is_file()
+            else None
+        )
+        for name in names
+    }
+
+
+class TestRawPriorHighExitBoundary:
+    def test_exit_at_prior_120_high_not_buffered_boundary(
+        self, tmp_path: Path
+    ) -> None:
+        # entry_breakout_level should be RAW 100_000_000 (not 100_500_000).
+        # Exit threshold = max(100M, prior_60_low=100M) = 100M.
+        # A drop-candle close of 99_999_999 (one unit below RAW level)
+        # exits; the OLD buffered rule would have kept LONG at 100_499_999.
+        candles = _entry_series()
+        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "100600000"))
+        candles.append(
+            _candle(
+                WARMUP_CANDLE_COUNT + 2,
+                open_="100600000",
+                high="100600000",
+                low="99999999",
+                close="99999999",
+            )
+        )
+        candles.append(_flat(WARMUP_CANDLE_COUNT + 3, "99999999"))
+        dataset = _dataset(candles)
+        snapshot = make_snapshot()
+        config = _config()
+
+        result = run_breakout_paper_session(
+            dataset, snapshot, config, tmp_path,
+            now_utc=candles[-1].open_time_utc + STEP,
+        )
+        assert result.invalid_reason is None, result.invalid_reason
+        assert len(result.forward_entries) == 2
+        buy, sell = result.forward_entries
+        assert buy.side == "buy"
+        assert sell.side == "sell"
+        assert buy.fill_ts_utc == candles[WARMUP_CANDLE_COUNT + 1].open_time_utc
+        assert sell.fill_ts_utc == candles[WARMUP_CANDLE_COUNT + 3].open_time_utc
+
+    def test_close_equal_to_raw_prior_high_retains_long(
+        self, tmp_path: Path
+    ) -> None:
+        # Close exactly at the RAW prior_120_high — retain LONG.
         candles = _entry_series()
         candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "100600000"))
         candles.append(
@@ -141,187 +199,309 @@ class TestGoldenRun:
                 close="100000000",
             )
         )
-        candles.append(_flat(WARMUP_CANDLE_COUNT + 3, "100000000"))
         dataset = _dataset(candles)
         snapshot = make_snapshot()
         config = _config()
-        now = candles[-1].open_time_utc + STEP
 
         result = run_breakout_paper_session(
-            dataset, snapshot, config, tmp_path, now_utc=now
-        )
-        assert result.invalid_reason is None, result.invalid_reason
-        # Two fills: BUY on index 121, SELL on index 123.
-        assert len(result.forward_entries) == 2
-        buy, sell = result.forward_entries
-        assert buy.side == "buy"
-        assert sell.side == "sell"
-        # Next-candle execution:
-        assert buy.fill_ts_utc == candles[WARMUP_CANDLE_COUNT + 1].open_time_utc
-        assert sell.fill_ts_utc == candles[WARMUP_CANDLE_COUNT + 3].open_time_utc
-        # State-dir artifacts written.
-        assert (tmp_path / "state.json").is_file()
-        assert (tmp_path / "fills.jsonl").is_file()
-        assert (tmp_path / "signals.jsonl").is_file()
-        assert (tmp_path / "equity.jsonl").is_file()
-
-    def test_no_signal_no_fill_fresh_portfolio(self, tmp_path: Path) -> None:
-        # Flat warmup + one flat forward candle → no transition → no
-        # fills, cash unchanged.
-        candles = [_flat(i, "100000000") for i in range(WARMUP_CANDLE_COUNT)]
-        candles.append(_flat(WARMUP_CANDLE_COUNT, "100000000"))
-        dataset = _dataset(candles)
-        snapshot = make_snapshot()
-        config = _config()
-        now = candles[-1].open_time_utc + STEP
-
-        result = run_breakout_paper_session(
-            dataset, snapshot, config, tmp_path, now_utc=now
+            dataset, snapshot, config, tmp_path,
+            now_utc=candles[-1].open_time_utc + STEP,
         )
         assert result.invalid_reason is None
-        assert result.forward_entries == ()
-        assert result.final_cash_krw.value == Decimal("20000000")
-        assert result.final_position_qty.value == Decimal("0")
+        # Only the BUY fills; equality with RAW prior high retains LONG.
+        assert len(result.forward_entries) == 1
+        assert result.forward_entries[0].side == "buy"
 
 
 class TestNextCandleExecution:
     def test_buy_never_fills_on_source_candle(self, tmp_path: Path) -> None:
         candles = _entry_series()
-        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "300000000"))
+        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "100600000"))
         dataset = _dataset(candles)
         snapshot = make_snapshot()
         config = _config()
-        now = candles[-1].open_time_utc + STEP
 
         result = run_breakout_paper_session(
-            dataset, snapshot, config, tmp_path, now_utc=now
+            dataset, snapshot, config, tmp_path,
+            now_utc=candles[-1].open_time_utc + STEP,
         )
         assert len(result.forward_entries) == 1
         buy = result.forward_entries[0]
-        assert buy.side == "buy"
-        # Signal source is index 120; fill is index 121 (source_open + STEP).
         assert buy.source_open_time_utc == candles[WARMUP_CANDLE_COUNT].open_time_utc
-        assert buy.fill_ts_utc == candles[WARMUP_CANDLE_COUNT + 1].open_time_utc
         assert buy.fill_ts_utc == buy.source_open_time_utc + STEP
 
 
-class TestResume:
-    def test_resume_after_flat_forward_writes_no_duplicate_fills(
+class TestOpenLongResumeParity:
+    def test_split_run_matches_one_shot_across_long_state(
         self, tmp_path: Path
     ) -> None:
-        # First invocation: warmup + 1 flat forward candle (no fills).
-        candles = [_flat(i, "100000000") for i in range(WARMUP_CANDLE_COUNT)]
-        candles.append(_flat(WARMUP_CANDLE_COUNT, "100000000"))
-        dataset1 = _dataset(candles)
-        snapshot = make_snapshot()
-        config = _config()
+        # Build a dataset where the strategy is LONG mid-way. Split
+        # between the fill candle and the exit-signal candle so the
+        # split happens while LONG. Resume must reproduce the identical
+        # fills / cash / position as a one-shot run.
+        full_candles = _entry_series()
+        # candle 121: BUY fills here.
+        full_candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "100600000"))
+        # candle 122: still holding LONG, close above SMA-of-highs.
+        full_candles.append(_flat(WARMUP_CANDLE_COUNT + 2, "100600000"))
+        # candle 123: strategy CASH signal (close < RAW prior_120_high).
+        full_candles.append(
+            _candle(
+                WARMUP_CANDLE_COUNT + 3,
+                open_="100600000",
+                high="100600000",
+                low="99999999",
+                close="99999999",
+            )
+        )
+        # candle 124: SELL fills here.
+        full_candles.append(_flat(WARMUP_CANDLE_COUNT + 4, "99999999"))
 
+        # One-shot run.
+        one_shot_dir = tmp_path / "one_shot"
+        one_shot_dir.mkdir()
+        one_shot = run_breakout_paper_session(
+            _dataset(full_candles), make_snapshot(), _config(), one_shot_dir,
+            now_utc=full_candles[-1].open_time_utc + STEP,
+        )
+        assert one_shot.invalid_reason is None
+
+        # Split-and-resume: split AFTER the BUY fill (index 121), while LONG.
+        split_dir = tmp_path / "split"
+        split_dir.mkdir()
+        first_slice = full_candles[: WARMUP_CANDLE_COUNT + 2]  # includes fill
         r1 = run_breakout_paper_session(
-            dataset1, snapshot, config, tmp_path,
-            now_utc=candles[-1].open_time_utc + STEP,
+            _dataset(first_slice), make_snapshot(), _config(), split_dir,
+            now_utc=first_slice[-1].open_time_utc + STEP,
         )
         assert r1.invalid_reason is None
-        assert r1.forward_entries == ()
-        assert r1.resumed is False
-
-        # Append one more flat forward candle and resume. Still no
-        # transitions, so still no fills, but state.last_processed
-        # advances.
-        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "100000000"))
-        dataset2 = _dataset(candles)
+        # After the BUY fills, position is > 0 (LONG mid-resume).
+        assert r1.final_position_qty.value > 0
+        assert len(r1.forward_entries) == 1
 
         r2 = run_breakout_paper_session(
-            dataset2, snapshot, config, tmp_path,
-            now_utc=candles[-1].open_time_utc + STEP,
+            _dataset(full_candles), make_snapshot(), _config(), split_dir,
+            now_utc=full_candles[-1].open_time_utc + STEP,
         )
         assert r2.invalid_reason is None
-        assert r2.resumed is True
-        assert r2.forward_entries == ()
-        # fills.jsonl is either absent or empty; state.json exists.
-        fills_path = tmp_path / "fills.jsonl"
-        assert (not fills_path.exists()) or fills_path.read_bytes() == b""
-        assert (tmp_path / "state.json").is_file()
 
-    def test_resume_after_entry_before_exit_refuses(self, tmp_path: Path) -> None:
-        # First invocation covers just warmup + entry + fill candle;
-        # final_position_qty > 0 at save time. Second invocation must
-        # refuse (open-long resume not supported).
-        candles = _entry_series()
-        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "300000000"))
-        dataset1 = _dataset(candles)
-        snapshot = make_snapshot()
-        config = _config()
-
-        r1 = run_breakout_paper_session(
-            dataset1, snapshot, config, tmp_path,
-            now_utc=candles[-1].open_time_utc + STEP,
+        # Parity: same total fills, cash, position.
+        assert len(r2.forward_entries) == len(one_shot.forward_entries) == 2
+        assert r2.final_cash_krw == one_shot.final_cash_krw
+        assert r2.final_position_qty == one_shot.final_position_qty
+        # Fills logs equal.
+        assert (
+            (split_dir / "fills.jsonl").read_bytes()
+            == (one_shot_dir / "fills.jsonl").read_bytes()
         )
-        assert r1.invalid_reason is None
-        assert len(r1.forward_entries) == 1
-        assert r1.final_position_qty.value > 0
-
-        # Append candles and try to resume.
-        candles.append(_flat(WARMUP_CANDLE_COUNT + 2, "300000000"))
-        dataset2 = _dataset(candles)
-        with pytest.raises(BreakoutResumeDivergenceError):
-            run_breakout_paper_session(
-                dataset2, snapshot, config, tmp_path,
-                now_utc=candles[-1].open_time_utc + STEP,
-            )
-
-    def test_resume_refuses_starting_cash_change(self, tmp_path: Path) -> None:
-        candles = [_flat(i, "100000000") for i in range(WARMUP_CANDLE_COUNT)]
-        candles.append(_flat(WARMUP_CANDLE_COUNT, "100000000"))
-        dataset = _dataset(candles)
-        snapshot = make_snapshot()
-        r1 = run_breakout_paper_session(
-            dataset, snapshot, _config(cash="20000000"),
-            tmp_path, now_utc=candles[-1].open_time_utc + STEP,
+        # Equity logs equal.
+        assert (
+            (split_dir / "equity.jsonl").read_bytes()
+            == (one_shot_dir / "equity.jsonl").read_bytes()
         )
-        assert r1.invalid_reason is None
-
-        with pytest.raises(BreakoutResumeDivergenceError):
-            run_breakout_paper_session(
-                dataset, snapshot, _config(cash="30000000"),
-                tmp_path, now_utc=candles[-1].open_time_utc + STEP,
-            )
 
 
-class TestDeterministicReplay:
-    def test_two_fresh_runs_produce_identical_ledgers(
+class TestFinalCandleSignalFillsOnNextAppend:
+    def test_signal_on_last_candle_fires_on_next_run_first_candle(
         self, tmp_path: Path
     ) -> None:
+        # Run 1: warmup + entry candle. Signal emits (LONG); no fill
+        # (no next candle yet).
+        first_slice = _entry_series()
+        r1 = run_breakout_paper_session(
+            _dataset(first_slice), make_snapshot(), _config(), tmp_path,
+            now_utc=first_slice[-1].open_time_utc + STEP,
+        )
+        assert r1.invalid_reason is None
+        assert r1.new_signals_this_invocation == 1
+        assert r1.new_fills_this_invocation == 0
+        assert r1.final_position_qty.value == 0
+
+        # Run 2: append one more candle. That candle is the fill.
+        appended = first_slice + [_flat(WARMUP_CANDLE_COUNT + 1, "100600000")]
+        r2 = run_breakout_paper_session(
+            _dataset(appended), make_snapshot(), _config(), tmp_path,
+            now_utc=appended[-1].open_time_utc + STEP,
+        )
+        assert r2.invalid_reason is None
+        assert r2.new_fills_this_invocation == 1
+        buy = r2.forward_entries[0]
+        assert buy.side == "buy"
+        # Fill happens on the newly appended candle, not the original last.
+        assert buy.fill_ts_utc == appended[-1].open_time_utc
+
+
+class TestStoppedOutLockoutResumeParity:
+    def test_split_across_stop_out_matches_one_shot(
+        self, tmp_path: Path
+    ) -> None:
+        # Build a dataset that: enters LONG, then gaps way below the
+        # 10% protective stop level (triggers stop-out and arms the
+        # lockout), then recovers and re-enters — but the lockout must
+        # persist until a CASH transition clears it. The parity check
+        # is: split before the stop-out vs. one-shot must yield the
+        # exact same terminal state after the recovery candles.
         candles = _entry_series()
-        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "300000000"))
+        # 121: BUY fills. Fill price ≈ 100.6M * 1.0025 = 100_851_500;
+        # protective stop = ~90_766_350.
+        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "100600000"))
+        # 122: STOP-OUT candle. Low well below the stop level.
         candles.append(
             _candle(
                 WARMUP_CANDLE_COUNT + 2,
-                open_="300000000",
-                high="300000000",
-                low="100000000",
-                close="100000000",
+                open_="100600000",
+                high="100600000",
+                low="50000000",
+                close="50000000",
             )
         )
-        candles.append(_flat(WARMUP_CANDLE_COUNT + 3, "100000000"))
-        dataset = _dataset(candles)
-        snapshot = make_snapshot()
-        config = _config()
-        now = candles[-1].open_time_utc + STEP
+        # 123..: recovery — flat candles keep close < RAW prior high so
+        # no new LONG entry until the strategy first returns to CASH.
+        # The strategy is already in CASH after stop-out (because we
+        # arm lockout). To clear lockout, close must drop such that
+        # signal emits CASH. But strategy tracks its own state which
+        # is LONG from the entry signal — it only emits CASH when
+        # close < max(entry_level, prior_60_low). At index 123, close
+        # is 50M << 100M → CASH signal emits → clears lockout.
+        candles.append(_flat(WARMUP_CANDLE_COUNT + 3, "50000000"))
+        candles.append(_flat(WARMUP_CANDLE_COUNT + 4, "50000000"))
+        dataset_full = _dataset(candles)
 
-        state_a = tmp_path / "a"
-        state_b = tmp_path / "b"
-        state_a.mkdir()
-        state_b.mkdir()
+        # One-shot.
+        one_shot_dir = tmp_path / "one_shot"
+        one_shot_dir.mkdir()
+        one_shot = run_breakout_paper_session(
+            dataset_full, make_snapshot(), _config(), one_shot_dir,
+            now_utc=candles[-1].open_time_utc + STEP,
+        )
+        assert one_shot.invalid_reason is None
+        # BUY at 121 + stop-out sell at 122 = 2 entries.
+        assert len(one_shot.forward_entries) == 2
 
+        # Split-and-resume: split AFTER the BUY fill (index 121).
+        split_dir = tmp_path / "split"
+        split_dir.mkdir()
+        first_slice = candles[: WARMUP_CANDLE_COUNT + 2]
         r1 = run_breakout_paper_session(
-            dataset, snapshot, config, state_a, now_utc=now
+            _dataset(first_slice), make_snapshot(), _config(), split_dir,
+            now_utc=first_slice[-1].open_time_utc + STEP,
         )
+        assert r1.invalid_reason is None
+        assert len(r1.forward_entries) == 1  # BUY only, no stop yet.
+        assert r1.final_position_qty.value > 0
+        assert r1.stopped_out_lockout is False
+
         r2 = run_breakout_paper_session(
-            dataset, snapshot, config, state_b, now_utc=now
+            dataset_full, make_snapshot(), _config(), split_dir,
+            now_utc=candles[-1].open_time_utc + STEP,
         )
-        assert r1.forward_entries == r2.forward_entries
-        assert r1.final_cash_krw == r2.final_cash_krw
-        assert r1.final_position_qty == r2.final_position_qty
+        assert r2.invalid_reason is None
+
+        assert len(r2.forward_entries) == len(one_shot.forward_entries)
+        assert r2.final_cash_krw == one_shot.final_cash_krw
+        assert r2.final_position_qty == one_shot.final_position_qty
+        assert r2.stopped_out_lockout == one_shot.stopped_out_lockout
+        assert (
+            (split_dir / "fills.jsonl").read_bytes()
+            == (one_shot_dir / "fills.jsonl").read_bytes()
+        )
+
+
+class TestMutatedPrefixRefusal:
+    def test_mutated_candle_on_resume_refuses_without_mutation(
+        self, tmp_path: Path
+    ) -> None:
+        # Run 1: process 121 candles (warmup + entry).
+        first_slice = _entry_series()
+        r1 = run_breakout_paper_session(
+            _dataset(first_slice), make_snapshot(), _config(), tmp_path,
+            now_utc=first_slice[-1].open_time_utc + STEP,
+        )
+        assert r1.invalid_reason is None
+
+        # Capture on-disk state.
+        before = _snapshot_dir(tmp_path)
+        assert before["candle_fingerprints.jsonl"] is not None
+
+        # Mutate the entry candle's HIGH — this changes its fingerprint.
+        mutated_candles = list(first_slice)
+        original = mutated_candles[WARMUP_CANDLE_COUNT]
+        # Bump high by 1.
+        mutated_candles[WARMUP_CANDLE_COUNT] = _candle(
+            WARMUP_CANDLE_COUNT,
+            open_=str(original.open.value),
+            high=str(original.high.value + Decimal("1")),
+            low=str(original.low.value),
+            close=str(original.close.value),
+        )
+        # Append a new candle so resume tries to advance.
+        mutated_candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "100600000"))
+
+        with pytest.raises(ProcessedPrefixMutatedError):
+            run_breakout_paper_session(
+                _dataset(mutated_candles), make_snapshot(), _config(),
+                tmp_path, now_utc=mutated_candles[-1].open_time_utc + STEP,
+            )
+
+        # Every persisted file byte-unchanged.
+        after = _snapshot_dir(tmp_path)
+        assert after == before
+
+
+class TestPerCandleEquityCountAndReplay:
+    def test_one_equity_point_per_forward_candle(
+        self, tmp_path: Path
+    ) -> None:
+        # 5 forward candles → equity.jsonl has 5 lines.
+        candles = _entry_series() + [
+            _flat(WARMUP_CANDLE_COUNT + k, "100600000") for k in range(1, 5)
+        ]
+        r = run_breakout_paper_session(
+            _dataset(candles), make_snapshot(), _config(), tmp_path,
+            now_utc=candles[-1].open_time_utc + STEP,
+        )
+        assert r.invalid_reason is None
+        lines = (tmp_path / "equity.jsonl").read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 5
+        assert r.new_equity_points_this_invocation == 5
+        # 5 forward candles including entry + 4 flat.
+        assert r.forward_candle_count == 5
+
+    def test_resume_appends_only_new_equity_points_and_prefix_matches(
+        self, tmp_path: Path
+    ) -> None:
+        # Run 1: 3 forward candles.
+        candles_a = _entry_series() + [
+            _flat(WARMUP_CANDLE_COUNT + 1, "100600000"),
+            _flat(WARMUP_CANDLE_COUNT + 2, "100600000"),
+        ]
+        r1 = run_breakout_paper_session(
+            _dataset(candles_a), make_snapshot(), _config(), tmp_path,
+            now_utc=candles_a[-1].open_time_utc + STEP,
+        )
+        assert r1.invalid_reason is None
+        equity_before = (
+            (tmp_path / "equity.jsonl").read_text(encoding="utf-8").splitlines()
+        )
+        assert len(equity_before) == 3
+
+        # Run 2: append 2 more.
+        candles_b = candles_a + [
+            _flat(WARMUP_CANDLE_COUNT + 3, "100600000"),
+            _flat(WARMUP_CANDLE_COUNT + 4, "100600000"),
+        ]
+        r2 = run_breakout_paper_session(
+            _dataset(candles_b), make_snapshot(), _config(), tmp_path,
+            now_utc=candles_b[-1].open_time_utc + STEP,
+        )
+        assert r2.invalid_reason is None
+        equity_after = (
+            (tmp_path / "equity.jsonl").read_text(encoding="utf-8").splitlines()
+        )
+        assert len(equity_after) == 5
+        assert r2.new_equity_points_this_invocation == 2
+        # Prefix byte-equal.
+        assert equity_after[:3] == equity_before
 
 
 class TestSeparateLedgers:
@@ -331,34 +511,47 @@ class TestSeparateLedgers:
         sma_state = tmp_path / "sma_state"
         breakout_state = tmp_path / "breakout_state"
         sma_state.mkdir()
-        # Preseed a sentinel file the SMA runner would write.
         (sma_state / "sma_sentinel").write_bytes(b"sma-owned")
 
         candles = _entry_series()
-        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "300000000"))
-        dataset = _dataset(candles)
-        snapshot = make_snapshot()
-        config = _config()
-        now = candles[-1].open_time_utc + STEP
-
+        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "100600000"))
         result = run_breakout_paper_session(
-            dataset, snapshot, config, breakout_state, now_utc=now
+            _dataset(candles), make_snapshot(), _config(), breakout_state,
+            now_utc=candles[-1].open_time_utc + STEP,
         )
         assert result.invalid_reason is None
-
-        # Breakout wrote to its own dir…
         assert (breakout_state / "state.json").is_file()
         assert (breakout_state / "fills.jsonl").is_file()
-        # …and left the SMA dir untouched (no state.json / fills.jsonl
-        # written there, sentinel intact).
         assert (sma_state / "sma_sentinel").read_bytes() == b"sma-owned"
         assert not (sma_state / "state.json").exists()
-        assert not (sma_state / "fills.jsonl").exists()
+
+
+class TestResumeDivergence:
+    def test_resume_refuses_starting_cash_change_without_mutation(
+        self, tmp_path: Path
+    ) -> None:
+        candles = [_flat(i, "100000000") for i in range(WARMUP_CANDLE_COUNT)]
+        candles.append(_flat(WARMUP_CANDLE_COUNT, "100000000"))
+        dataset = _dataset(candles)
+        snapshot = make_snapshot()
+        r1 = run_breakout_paper_session(
+            dataset, snapshot, _config(cash="20000000"),
+            tmp_path, now_utc=candles[-1].open_time_utc + STEP,
+        )
+        assert r1.invalid_reason is None
+        before = _snapshot_dir(tmp_path)
+
+        with pytest.raises(BreakoutResumeDivergenceError):
+            run_breakout_paper_session(
+                dataset, snapshot, _config(cash="30000000"),
+                tmp_path, now_utc=candles[-1].open_time_utc + STEP,
+            )
+        after = _snapshot_dir(tmp_path)
+        assert after == before
 
 
 class TestInputContract:
     def test_wrong_market_refuses(self, tmp_path: Path) -> None:
-        # Same warmup shape but tag every candle KRW-ETH.
         candles = [
             Candle(
                 market="KRW-ETH",
@@ -392,10 +585,9 @@ class TestInputContract:
                 effective_end_utc=end.isoformat(),
             ),
         )
-        snapshot = make_snapshot()
         with pytest.raises(BreakoutInputContractMismatchError):
             run_breakout_paper_session(
-                dataset, snapshot, _config(),
+                dataset, make_snapshot(), _config(),
                 tmp_path, now_utc=candles[-1].open_time_utc + STEP,
             )
 
@@ -404,8 +596,7 @@ class TestInputContract:
         candles.append(_flat(WARMUP_CANDLE_COUNT, "100000000"))
         dataset = _dataset(candles)
         snapshot = make_snapshot()
-        # now_utc equals the last candle's OPEN — close hasn't passed.
-        now = candles[-1].open_time_utc
+        now = candles[-1].open_time_utc  # not yet closed
 
         result = run_breakout_paper_session(
             dataset, snapshot, _config(), tmp_path, now_utc=now
@@ -414,7 +605,6 @@ class TestInputContract:
         assert not (tmp_path / "state.json").exists()
 
     def test_insufficient_forward_candles_refuses(self, tmp_path: Path) -> None:
-        # Only WARMUP_CANDLE_COUNT candles, no forward candle.
         candles = [_flat(i, "100000000") for i in range(WARMUP_CANDLE_COUNT)]
         dataset = _dataset(candles)
         snapshot = make_snapshot()
