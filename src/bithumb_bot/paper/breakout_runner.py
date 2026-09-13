@@ -12,9 +12,10 @@ final-cash approach in 7ca7f78). On every invocation the runner:
 2. Loads the prior :class:`BreakoutState` if present, and verifies
    invocation-level divergence: market, unit, cash, paper-start,
    fixed strategy params, PLUS the three exact-content SHA-256
-   fingerprints (b3ce934-followup) — the 120-candle warmup slice,
-   the full :class:`BreakoutPaperConfig` (starting cash, max notional,
-   every :class:`ExecutionConfig` field), and the canonical
+   fingerprints (b3ce934-followup) — the ``WARMUP_CANDLE_COUNT``-
+   candle comparison-warmup slice, the full
+   :class:`BreakoutPaperConfig` (starting cash, max notional, every
+   :class:`ExecutionConfig` field), and the canonical
    :class:`SnapshotV1` content. Any drift raises
    :class:`BreakoutResumeDivergenceError` BEFORE any file mutation.
 3. Reads the persisted prefix logs (``candle_fingerprints.jsonl``,
@@ -98,10 +99,18 @@ from bithumb_bot.strategy.breakout import (
     generate_breakout_signals,
 )
 
-#: Number of pre-paper candles required before the first forward candle
-#: — equal to :data:`ENTRY_LOOKBACK_CANDLES` so the strategy's first
-#: evaluable candle in the full dataset is exactly ``paper_start_ts_utc``.
-WARMUP_CANDLE_COUNT: int = ENTRY_LOOKBACK_CANDLES
+#: Number of pre-paper candles required before the first forward candle.
+#: Fixed at 1,200 — the same value as
+#: :data:`bithumb_bot.paper.runner.WARMUP_CANDLE_COUNT` — so the SMA
+#: and breakout paper runners share the EXACT same
+#: ``paper_start_ts_utc`` for a given dataset. The breakout strategy
+#: itself needs only :data:`ENTRY_LOOKBACK_CANDLES` (120) prior
+#: candles; the extra ``1_200 - 120 = 1_080`` pre-paper candles are
+#: NOT fed into the strategy (see STAGE 5's reduced signal input),
+#: so the strategy's internal ``current_state`` is still ``CASH`` at
+#: ``paper_start_ts_utc`` — matching the SMA runner's warmup-isolation
+#: semantics.
+WARMUP_CANDLE_COUNT: int = 1_200
 
 _PROTECTIVE_STOP_FRACTION: Decimal = Decimal("0.10")
 _TARGET_SLEEVE_FRACTION: Decimal = Decimal("1.0")
@@ -109,10 +118,12 @@ _TARGET_SLEEVE_FRACTION: Decimal = Decimal("1.0")
 #:   1 — original seed-from-final-cash resume model (7ca7f78, retired).
 #:   2 — deterministic full replay from paper_start (b3ce934, retired).
 #:   3 — b3ce934 followup: adds `warmup_sha256`, `config_sha256`,
-#:       `snapshot_sha256` — fingerprints that fail closed on any
-#:       silent drift of the warmup slice, the operator's config, or
-#:       the snapshot content.
-_SCHEMA_VERSION: int = 3
+#:       `snapshot_sha256` fingerprints (retired).
+#:   4 — comparison-warmup alignment with the SMA runner: bumps
+#:       WARMUP_CANDLE_COUNT from ENTRY_LOOKBACK_CANDLES (120) to
+#:       1,200. `warmup_sha256` now covers all 1,200 pre-paper
+#:       candles, so a v3 state.json is not resume-compatible.
+_SCHEMA_VERSION: int = 4
 _RUN_PURPOSE: str = "engineering_smoke"
 
 _DOMAIN_REFUSALS = (
@@ -194,10 +205,11 @@ class BreakoutState:
     (schema_version >= 3) fingerprint every input the resume model
     depends on:
 
-    * ``warmup_sha256`` — the 120-candle warmup slice (canonical
-      projection through :func:`bithumb_bot.market_data.candles.Candle.
-      model_dump(mode="json")` then :func:`~bithumb_bot.artifact.
-      canonical.canonical_bytes` then SHA-256).
+    * ``warmup_sha256`` — the full ``WARMUP_CANDLE_COUNT``-candle
+      comparison-warmup slice (canonical projection through
+      :func:`bithumb_bot.market_data.candles.Candle.model_dump(mode=
+      "json")` then :func:`~bithumb_bot.artifact.canonical.
+      canonical_bytes` then SHA-256).
     * ``config_sha256`` — the full :class:`BreakoutPaperConfig` including
       ``starting_cash_krw``, ``max_notional_krw``, and every
       :class:`~bithumb_bot.execution.config.ExecutionConfig` field.
@@ -359,7 +371,8 @@ def _fingerprint_row(index: int) -> str:
 
 
 def _warmup_slice_sha256(dataset: CandleDataset) -> str:
-    """Exact-content fingerprint of the 120-candle warmup slice.
+    """Exact-content fingerprint of the full ``WARMUP_CANDLE_COUNT``-
+    candle comparison-warmup slice.
 
     Uses each candle's canonical JSON dump (via pydantic) so any change
     to open/high/low/close/volume/quote_volume/open_time_utc/market/
@@ -445,10 +458,10 @@ def _load_state(state_dir: Path) -> BreakoutState | None:
     on_disk_schema = parsed.get("schema_version") if isinstance(parsed, dict) else None
     if on_disk_schema != _SCHEMA_VERSION:
         raise BreakoutResumeDivergenceError(
-            f"state.json schema_version={on_disk_schema!r} predates the "
-            f"current runner's schema_version={_SCHEMA_VERSION} — an older "
-            "state.json is not resume-compatible (missing input "
-            "fingerprints); delete the state directory to start fresh"
+            f"state.json schema_version={on_disk_schema!r} does not match "
+            f"the current runner's schema_version={_SCHEMA_VERSION} — an "
+            "older state.json is not resume-compatible; delete the state "
+            "directory to start fresh"
         )
     return BreakoutState(**parsed)
 
@@ -757,13 +770,28 @@ def run_breakout_paper_session(
     )
 
     # ---- STAGE 5: deterministic full replay from paper_start ----
-    # Signal generation. Since WARMUP_CANDLE_COUNT == ENTRY_LOOKBACK_CANDLES,
-    # feeding the full dataset produces the same result as the reduced-
-    # dataset trick used elsewhere — the strategy's first evaluable candle
-    # is exactly paper_start.
-    all_signals = generate_breakout_signals(dataset.candles)
+    # Signal generation — warmup isolation (matches the SMA runner's
+    # `_build_reduced_dataset` idea). The strategy is fed a REDUCED
+    # slice — the last `ENTRY_LOOKBACK_CANDLES` pre-paper candles plus
+    # every forward candle — so its first evaluable candle is exactly
+    # `paper_start_ts_utc` and its internal `current_state` cannot
+    # transition anywhere during the 1,200-candle comparison warmup.
+    # The pre-paper 1,080-candle prefix (indices 0..1079) is
+    # comparison-warmup only: fingerprinted via `warmup_sha256`, never
+    # consumed as strategy state.
+    strategy_input_start = WARMUP_CANDLE_COUNT - ENTRY_LOOKBACK_CANDLES
+    strategy_input = dataset.candles[strategy_input_start:]
+    all_signals = generate_breakout_signals(strategy_input)
+    # Belt-and-suspenders: by construction no signal can fire before
+    # `paper_start_ts_utc` (the strategy's warm-up burns the first
+    # ENTRY_LOOKBACK_CANDLES of `strategy_input`, whose last one is
+    # exactly the pre-paper candle at full-dataset index
+    # WARMUP_CANDLE_COUNT - 1), but the filter is explicit so no
+    # warmup-source signal can ever leak into the forward audit trail.
     signals_by_source: dict[datetime, BreakoutSignal] = {
-        s.source_open_time_utc: s for s in all_signals
+        s.source_open_time_utc: s
+        for s in all_signals
+        if s.source_open_time_utc >= paper_start_ts_utc
     }
 
     state = LedgerState(

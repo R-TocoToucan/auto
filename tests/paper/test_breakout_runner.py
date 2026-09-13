@@ -44,6 +44,7 @@ from bithumb_bot.paper.breakout_runner import (
     BreakoutResumeDivergenceError,
     run_breakout_paper_session,
 )
+from bithumb_bot.strategy.breakout import ENTRY_LOOKBACK_CANDLES
 
 from .conftest import make_snapshot
 
@@ -854,3 +855,192 @@ class TestMalformedJsonlBecomesPrefixMutatedError:
                 _dataset(candles), make_snapshot(), _config(), tmp_path,
                 now_utc=candles[-1].open_time_utc + STEP,
             )
+
+
+# ---------------------------------------------------------------------------
+# f614368-followup: comparison-warmup alignment with the SMA runner
+# ---------------------------------------------------------------------------
+
+
+class TestWarmupAlignmentWithSmaRunner:
+    """The breakout and SMA paper runners MUST share the same
+    ``WARMUP_CANDLE_COUNT`` (1,200) and therefore the same
+    ``paper_start_ts_utc`` for a given dataset — otherwise parallel
+    shadow-vs-baseline results are measured over different forward
+    windows and cannot be compared honestly."""
+
+    def test_breakout_and_sma_warmup_counts_are_both_1200(self) -> None:
+        from bithumb_bot.paper.runner import (
+            WARMUP_CANDLE_COUNT as SMA_WARMUP,
+        )
+
+        assert WARMUP_CANDLE_COUNT == 1_200
+        assert SMA_WARMUP == 1_200
+        assert WARMUP_CANDLE_COUNT == SMA_WARMUP
+
+    def test_same_dataset_produces_same_paper_start(
+        self, tmp_path: Path
+    ) -> None:
+        # A 1,200-flat + 1-forward dataset. Both runners must pin
+        # `paper_start_ts_utc` to the candle at index 1,200.
+        candles = [_flat(i, "100000000") for i in range(WARMUP_CANDLE_COUNT)]
+        candles.append(_flat(WARMUP_CANDLE_COUNT, "100000000"))
+        dataset = _dataset(candles)
+        snapshot = make_snapshot()
+        now = candles[-1].open_time_utc + STEP
+
+        breakout_result = run_breakout_paper_session(
+            dataset, snapshot, _config(), tmp_path / "breakout", now_utc=now
+        )
+        assert breakout_result.paper_start_ts_utc == (
+            candles[WARMUP_CANDLE_COUNT].open_time_utc
+        )
+
+        # SMA runner over the same dataset — must also pin
+        # paper_start_ts_utc to candle 1,200.
+        from bithumb_bot.paper.runner import run_paper_session
+
+        from .conftest import make_backtest_config
+
+        sma_result = run_paper_session(
+            dataset,
+            snapshot,
+            make_backtest_config(),
+            tmp_path / "sma",
+            now_utc=now,
+        )
+        assert sma_result.paper_start_ts_utc == (
+            candles[WARMUP_CANDLE_COUNT].open_time_utc
+        )
+        assert breakout_result.paper_start_ts_utc == sma_result.paper_start_ts_utc
+
+
+class TestNoWarmupLeakIntoForwardResults:
+    """Even if the pre-paper 1,200-candle window contains price moves
+    that WOULD trip a Donchian breakout, none of that may surface as a
+    forward-window signal, fill, or equity point — the strategy is fed
+    only the last ``ENTRY_LOOKBACK_CANDLES`` (120) pre-paper candles."""
+
+    def test_warmup_breakout_does_not_leak_a_forward_signal(
+        self, tmp_path: Path
+    ) -> None:
+        # Craft a warmup where the FIRST 1,080 pre-paper candles contain
+        # a would-be breakout (rising then falling), but the last 120
+        # pre-paper candles are perfectly flat at 100M. The forward
+        # window is one flat candle at 100M — the strategy sees 120
+        # flat priors plus one flat forward and must emit ZERO signals
+        # and produce ZERO fills.
+        candles: list[Candle] = []
+        for i in range(500):
+            candles.append(_flat(i, "100000000"))
+        for i in range(500, 800):
+            candles.append(_flat(i, "150000000"))
+        for i in range(800, WARMUP_CANDLE_COUNT - ENTRY_LOOKBACK_CANDLES):
+            candles.append(_flat(i, "80000000"))
+        for i in range(
+            WARMUP_CANDLE_COUNT - ENTRY_LOOKBACK_CANDLES, WARMUP_CANDLE_COUNT
+        ):
+            candles.append(_flat(i, "100000000"))
+        candles.append(_flat(WARMUP_CANDLE_COUNT, "100000000"))
+        dataset = _dataset(candles)
+
+        result = run_breakout_paper_session(
+            dataset,
+            make_snapshot(),
+            _config(),
+            tmp_path,
+            now_utc=candles[-1].open_time_utc + STEP,
+        )
+        assert result.invalid_reason is None
+        assert result.forward_signal_count == 0
+        assert len(result.forward_entries) == 0
+        assert result.final_cash_krw.value == Decimal("20000000")
+        assert result.final_position_qty.value == Decimal("0")
+        # Exactly one equity point per forward candle, marked at
+        # starting cash (no fills happened).
+        assert result.new_equity_points_this_invocation == 1
+        assert result.equity_curve[0].mark_to_market_equity_krw.value == (
+            Decimal("20000000")
+        )
+
+    def test_forward_signal_fills_no_earlier_than_next_candle(
+        self, tmp_path: Path
+    ) -> None:
+        candles = _entry_series()
+        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "100600000"))
+        dataset = _dataset(candles)
+        result = run_breakout_paper_session(
+            dataset,
+            make_snapshot(),
+            _config(),
+            tmp_path,
+            now_utc=candles[-1].open_time_utc + STEP,
+        )
+        assert result.invalid_reason is None
+        assert len(result.forward_entries) == 1
+        buy = result.forward_entries[0]
+        assert buy.side == "buy"
+        # Signal sourced at paper_start, filled on the NEXT candle.
+        assert buy.source_open_time_utc == candles[WARMUP_CANDLE_COUNT].open_time_utc
+        assert buy.fill_ts_utc == buy.source_open_time_utc + STEP
+        assert buy.fill_ts_utc >= (result.paper_start_ts_utc or buy.fill_ts_utc) + STEP
+
+
+class TestSchemaVersionBumpRefusesStaleState:
+    def test_v3_state_json_is_refused_on_resume(self, tmp_path: Path) -> None:
+        # Hand-write a state.json with schema_version=3 plus a matching
+        # sidecar, then attempt a resume — must refuse with
+        # BreakoutResumeDivergenceError and leave everything on disk
+        # untouched.
+        import json as _json
+
+        from bithumb_bot.artifact.canonical import sha256_hex
+
+        stale = {
+            "schema_version": 3,
+            "run_purpose": "engineering_smoke",
+            "selection_eligible": False,
+            "holdout_eligible": False,
+            "entry_buffer_bps": "50",
+            "entry_lookback_candles": 120,
+            "exit_lookback_candles": 60,
+            "dataset_market": "KRW-BTC",
+            "unit_minutes": 240,
+            "paper_start_ts_utc": (
+                (T0 + WARMUP_CANDLE_COUNT * STEP).isoformat()
+            ),
+            "starting_cash_krw": "20000000",
+            "warmup_sha256": "0" * 64,
+            "config_sha256": "0" * 64,
+            "snapshot_sha256": "0" * 64,
+            "final_cash_krw": "20000000",
+            "final_position_qty": "0",
+            "stopped_out_lockout": False,
+            "active_stop_price": None,
+            "entry_breakout_level": None,
+            "last_processed_open_utc": None,
+            "forward_fill_count": 0,
+            "forward_signal_count": 0,
+            "forward_candle_count": 0,
+            "forward_equity_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_bytes = _json.dumps(stale, sort_keys=True).encode("utf-8")
+        state_path.write_bytes(state_bytes)
+        (tmp_path / "state.json.sha256").write_text(
+            f"{sha256_hex(state_bytes)}  state.json\n", encoding="utf-8"
+        )
+        before = _snapshot_dir(tmp_path)
+
+        candles = [_flat(i, "100000000") for i in range(WARMUP_CANDLE_COUNT)]
+        candles.append(_flat(WARMUP_CANDLE_COUNT, "100000000"))
+
+        with pytest.raises(BreakoutResumeDivergenceError, match="schema_version"):
+            run_breakout_paper_session(
+                _dataset(candles),
+                make_snapshot(),
+                _config(),
+                tmp_path,
+                now_utc=candles[-1].open_time_utc + STEP,
+            )
+        assert _snapshot_dir(tmp_path) == before
