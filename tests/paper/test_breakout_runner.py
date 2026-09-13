@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from bithumb_bot.bithumb_spec.snapshot import FeeRates, SnapshotV1
 from bithumb_bot.core.money import Money
 from bithumb_bot.errors import ProcessedPrefixMutatedError
 from bithumb_bot.execution.config import ExecutionConfig
@@ -615,3 +616,241 @@ class TestInputContract:
         )
         assert result.refusal_code == "BreakoutInsufficientForwardCandlesError"
         assert not (tmp_path / "state.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# b3ce934-followup safety patch — input-fingerprint drift refusals
+# ---------------------------------------------------------------------------
+
+
+def _replace_candle_close(candle: Candle, new_close: str) -> Candle:
+    return Candle(
+        market=candle.market,
+        unit_minutes=candle.unit_minutes,
+        open_time_utc=candle.open_time_utc,
+        open=str(candle.open.value),
+        high=str(candle.high.value),
+        low=str(candle.low.value),
+        close=new_close,
+        volume=str(candle.volume.value),
+        quote_volume=str(candle.quote_volume.value),
+    )
+
+
+def _first_run_and_snapshot_dir(
+    tmp_path: Path,
+) -> tuple[list[Candle], SnapshotV1, BreakoutPaperConfig, dict[str, bytes | None]]:
+    """Do a fresh first run + return the on-disk snapshot to compare
+    against after a drift attempt."""
+    candles = _entry_series()
+    dataset = _dataset(candles)
+    snapshot = make_snapshot()
+    config = _config()
+    r1 = run_breakout_paper_session(
+        dataset, snapshot, config, tmp_path,
+        now_utc=candles[-1].open_time_utc + STEP,
+    )
+    assert r1.invalid_reason is None
+    return candles, snapshot, config, _snapshot_dir(tmp_path)
+
+
+class TestWarmupFingerprintDrift:
+    def test_mutated_warmup_candle_refuses_without_file_mutation(
+        self, tmp_path: Path
+    ) -> None:
+        candles, snapshot, config, before = _first_run_and_snapshot_dir(
+            tmp_path
+        )
+
+        # Mutate an in-warmup candle's close value. This changes the
+        # warmup fingerprint but leaves every forward-candle
+        # fingerprint identical, so the ONLY failing check is the
+        # warmup drift refusal.
+        mutated = list(candles)
+        mutated[10] = _replace_candle_close(mutated[10], "100000001")
+
+        with pytest.raises(BreakoutResumeDivergenceError, match="warmup_sha256"):
+            run_breakout_paper_session(
+                _dataset(mutated), snapshot, config, tmp_path,
+                now_utc=mutated[-1].open_time_utc + STEP,
+            )
+
+        assert _snapshot_dir(tmp_path) == before
+
+
+class TestConfigFingerprintDrift:
+    @pytest.mark.parametrize(
+        "field,new_kwargs",
+        [
+            ("slippage", {"slippage_bps_per_side": Decimal("40")}),
+            (
+                "max_notional",
+                {"max_notional_krw": Money(Decimal("50000000"))},
+            ),
+            (
+                "allow_provisional",
+                {"allow_provisional_fee_model": True},
+            ),
+            (
+                "quantum",
+                {"simulation_quantity_quantum": Decimal("0.00001000")},
+            ),
+        ],
+    )
+    def test_execution_config_field_change_refuses_without_mutation(
+        self, tmp_path: Path, field: str, new_kwargs: dict[str, object]
+    ) -> None:
+        candles, snapshot, config, before = _first_run_and_snapshot_dir(
+            tmp_path
+        )
+
+        drifted_execution = ExecutionConfig(
+            slippage_bps_per_side=(
+                new_kwargs.get(
+                    "slippage_bps_per_side",
+                    config.execution.slippage_bps_per_side,
+                )  # type: ignore[arg-type]
+            ),
+            max_notional_krw=(
+                new_kwargs.get(
+                    "max_notional_krw", config.execution.max_notional_krw
+                )  # type: ignore[arg-type]
+            ),
+            allow_provisional_fee_model=(
+                new_kwargs.get(
+                    "allow_provisional_fee_model",
+                    config.execution.allow_provisional_fee_model,
+                )  # type: ignore[arg-type]
+            ),
+            simulation_quantity_quantum=(
+                new_kwargs.get(
+                    "simulation_quantity_quantum",
+                    config.execution.simulation_quantity_quantum,
+                )  # type: ignore[arg-type]
+            ),
+        )
+        drifted = BreakoutPaperConfig(
+            starting_cash_krw=config.starting_cash_krw,
+            max_notional_krw=config.max_notional_krw,
+            execution=drifted_execution,
+        )
+
+        with pytest.raises(BreakoutResumeDivergenceError, match="config_sha256"):
+            run_breakout_paper_session(
+                _dataset(candles), snapshot, drifted, tmp_path,
+                now_utc=candles[-1].open_time_utc + STEP,
+            )
+
+        assert _snapshot_dir(tmp_path) == before
+
+
+class TestSnapshotFingerprintDrift:
+    def test_snapshot_fee_change_refuses_without_file_mutation(
+        self, tmp_path: Path
+    ) -> None:
+        candles, snapshot, config, before = _first_run_and_snapshot_dir(
+            tmp_path
+        )
+
+        # Rebuild the snapshot with a different (still-valid) fee rate.
+        drifted_snapshot = snapshot.model_copy(
+            update={"fee_rates": FeeRates(bid="0.0026", ask="0.0025")}
+        )
+
+        with pytest.raises(BreakoutResumeDivergenceError, match="snapshot_sha256"):
+            run_breakout_paper_session(
+                _dataset(candles), drifted_snapshot, config, tmp_path,
+                now_utc=candles[-1].open_time_utc + STEP,
+            )
+
+        assert _snapshot_dir(tmp_path) == before
+
+
+class TestUnchangedResumeMatchesOneShot:
+    """Regression guard: fingerprint tightening must not break the
+    everyday "resume with identical inputs" flow."""
+
+    def test_flat_resume_appends_only_new_suffix_and_matches_one_shot(
+        self, tmp_path: Path
+    ) -> None:
+        candles_a = _entry_series() + [
+            _flat(WARMUP_CANDLE_COUNT + 1, "100600000"),
+            _flat(WARMUP_CANDLE_COUNT + 2, "100600000"),
+        ]
+        candles_b = candles_a + [
+            _flat(WARMUP_CANDLE_COUNT + 3, "100600000"),
+            _flat(WARMUP_CANDLE_COUNT + 4, "100600000"),
+        ]
+
+        # One-shot over the full extended dataset.
+        one_shot_dir = tmp_path / "one_shot"
+        one_shot_dir.mkdir()
+        one_shot = run_breakout_paper_session(
+            _dataset(candles_b), make_snapshot(), _config(), one_shot_dir,
+            now_utc=candles_b[-1].open_time_utc + STEP,
+        )
+        assert one_shot.invalid_reason is None
+
+        # Two-shot: first the short dataset, then the extended one.
+        split_dir = tmp_path / "split"
+        split_dir.mkdir()
+        r1 = run_breakout_paper_session(
+            _dataset(candles_a), make_snapshot(), _config(), split_dir,
+            now_utc=candles_a[-1].open_time_utc + STEP,
+        )
+        assert r1.invalid_reason is None
+        r2 = run_breakout_paper_session(
+            _dataset(candles_b), make_snapshot(), _config(), split_dir,
+            now_utc=candles_b[-1].open_time_utc + STEP,
+        )
+        assert r2.invalid_reason is None
+
+        # Terminal state and audit trails byte-equal.
+        assert r2.final_cash_krw == one_shot.final_cash_krw
+        assert r2.final_position_qty == one_shot.final_position_qty
+        assert (
+            (split_dir / "fills.jsonl").read_bytes()
+            == (one_shot_dir / "fills.jsonl").read_bytes()
+        )
+        assert (
+            (split_dir / "signals.jsonl").read_bytes()
+            == (one_shot_dir / "signals.jsonl").read_bytes()
+        )
+        assert (
+            (split_dir / "equity.jsonl").read_bytes()
+            == (one_shot_dir / "equity.jsonl").read_bytes()
+        )
+        assert (
+            (split_dir / "candle_fingerprints.jsonl").read_bytes()
+            == (one_shot_dir / "candle_fingerprints.jsonl").read_bytes()
+        )
+
+
+class TestMalformedJsonlBecomesPrefixMutatedError:
+    """A hand-corrupted JSONL line surfaces as
+    ProcessedPrefixMutatedError, not a bare ValueError leaking to the
+    caller."""
+
+    def test_malformed_fills_jsonl_line_raises_prefix_mutated(
+        self, tmp_path: Path
+    ) -> None:
+        # First run to create the audit trail.
+        candles = _entry_series()
+        candles.append(_flat(WARMUP_CANDLE_COUNT + 1, "100600000"))
+        r1 = run_breakout_paper_session(
+            _dataset(candles), make_snapshot(), _config(), tmp_path,
+            now_utc=candles[-1].open_time_utc + STEP,
+        )
+        assert r1.invalid_reason is None
+        fills_path = tmp_path / "fills.jsonl"
+        assert fills_path.is_file()
+
+        # Corrupt fills.jsonl with a non-JSON line.
+        fills_path.write_bytes(b"{not json at all\n")
+
+        candles.append(_flat(WARMUP_CANDLE_COUNT + 2, "100600000"))
+        with pytest.raises(ProcessedPrefixMutatedError):
+            run_breakout_paper_session(
+                _dataset(candles), make_snapshot(), _config(), tmp_path,
+                now_utc=candles[-1].open_time_utc + STEP,
+            )

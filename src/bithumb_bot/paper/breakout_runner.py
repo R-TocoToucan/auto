@@ -10,10 +10,18 @@ final-cash approach in 7ca7f78). On every invocation the runner:
 
 1. Runs input-contract + incomplete-final-candle refusals.
 2. Loads the prior :class:`BreakoutState` if present, and verifies
-   invocation-level divergence (market, unit, cash, paper-start,
-   fixed strategy params).
+   invocation-level divergence: market, unit, cash, paper-start,
+   fixed strategy params, PLUS the three exact-content SHA-256
+   fingerprints (b3ce934-followup) — the 120-candle warmup slice,
+   the full :class:`BreakoutPaperConfig` (starting cash, max notional,
+   every :class:`ExecutionConfig` field), and the canonical
+   :class:`SnapshotV1` content. Any drift raises
+   :class:`BreakoutResumeDivergenceError` BEFORE any file mutation.
 3. Reads the persisted prefix logs (``candle_fingerprints.jsonl``,
-   ``fills.jsonl``, ``signals.jsonl``, ``equity.jsonl``).
+   ``fills.jsonl``, ``signals.jsonl``, ``equity.jsonl``). A malformed
+   JSONL line is converted into
+   :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError` — the CLI
+   catches this cleanly.
 4. Verifies every previously processed forward candle against the
    current dataset via :func:`bithumb_bot.paper.state.candle_fingerprint`
    (missing / reordered / shortened / mutated → fail closed with
@@ -97,10 +105,14 @@ WARMUP_CANDLE_COUNT: int = ENTRY_LOOKBACK_CANDLES
 
 _PROTECTIVE_STOP_FRACTION: Decimal = Decimal("0.10")
 _TARGET_SLEEVE_FRACTION: Decimal = Decimal("1.0")
-#: Bumped in the 7ca7f78-followup correction: schema_version=2 marks
-#: the deterministic-full-replay resume model (fields are the same
-#: shape; the fields' semantics changed).
-_SCHEMA_VERSION: int = 2
+#: Schema history:
+#:   1 — original seed-from-final-cash resume model (7ca7f78, retired).
+#:   2 — deterministic full replay from paper_start (b3ce934, retired).
+#:   3 — b3ce934 followup: adds `warmup_sha256`, `config_sha256`,
+#:       `snapshot_sha256` — fingerprints that fail closed on any
+#:       silent drift of the warmup slice, the operator's config, or
+#:       the snapshot content.
+_SCHEMA_VERSION: int = 3
 _RUN_PURPOSE: str = "engineering_smoke"
 
 _DOMAIN_REFUSALS = (
@@ -176,7 +188,25 @@ class BreakoutSessionResult:
 
 @dataclass(frozen=True)
 class BreakoutState:
-    """Byte-exact ``state.json`` shape. Every Decimal stored as a string."""
+    """Byte-exact ``state.json`` shape. Every Decimal stored as a string.
+
+    ``warmup_sha256`` / ``config_sha256`` / ``snapshot_sha256``
+    (schema_version >= 3) fingerprint every input the resume model
+    depends on:
+
+    * ``warmup_sha256`` — the 120-candle warmup slice (canonical
+      projection through :func:`bithumb_bot.market_data.candles.Candle.
+      model_dump(mode="json")` then :func:`~bithumb_bot.artifact.
+      canonical.canonical_bytes` then SHA-256).
+    * ``config_sha256`` — the full :class:`BreakoutPaperConfig` including
+      ``starting_cash_krw``, ``max_notional_krw``, and every
+      :class:`~bithumb_bot.execution.config.ExecutionConfig` field.
+    * ``snapshot_sha256`` — the :class:`SnapshotV1` content
+      (``model_dump(mode="json")`` → ``canonical_bytes`` → SHA-256).
+
+    Any drift raises :class:`BreakoutResumeDivergenceError` BEFORE any
+    JSONL / state.json mutation.
+    """
 
     schema_version: int
     run_purpose: str
@@ -189,6 +219,9 @@ class BreakoutState:
     unit_minutes: int
     paper_start_ts_utc: str
     starting_cash_krw: str
+    warmup_sha256: str
+    config_sha256: str
+    snapshot_sha256: str
     #: Informational only — the source of truth is deterministic replay.
     final_cash_krw: str
     final_position_qty: str
@@ -321,6 +354,77 @@ def _fingerprint_row(index: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# input-fingerprint helpers (schema_version >= 3)
+# ---------------------------------------------------------------------------
+
+
+def _warmup_slice_sha256(dataset: CandleDataset) -> str:
+    """Exact-content fingerprint of the 120-candle warmup slice.
+
+    Uses each candle's canonical JSON dump (via pydantic) so any change
+    to open/high/low/close/volume/quote_volume/open_time_utc/market/
+    unit_minutes on any warmup candle is caught.
+    """
+    warmup = dataset.candles[:WARMUP_CANDLE_COUNT]
+    return sha256_hex(
+        canonical_bytes([c.model_dump(mode="json") for c in warmup])
+    )
+
+
+def _config_sha256(config: BreakoutPaperConfig) -> str:
+    """Exact-content fingerprint of the full config surface.
+
+    Covers the BreakoutPaperConfig fields (starting_cash_krw,
+    max_notional_krw) AND every ExecutionConfig field
+    (slippage_bps_per_side, max_notional_krw,
+    allow_provisional_fee_model, simulation_quantity_quantum). All
+    Decimals are canonicalized via :func:`_dstr` (fixed-point exact
+    strings) — never coerced through float.
+    """
+    payload: dict[str, Any] = {
+        "starting_cash_krw": _dstr(config.starting_cash_krw.value),
+        "max_notional_krw": _dstr(config.max_notional_krw.value),
+        "execution": {
+            "slippage_bps_per_side": _dstr(
+                config.execution.slippage_bps_per_side
+            ),
+            "max_notional_krw": _dstr(
+                config.execution.max_notional_krw.value
+            ),
+            "allow_provisional_fee_model": (
+                config.execution.allow_provisional_fee_model
+            ),
+            "simulation_quantity_quantum": (
+                _dstr(config.execution.simulation_quantity_quantum)
+                if config.execution.simulation_quantity_quantum is not None
+                else None
+            ),
+        },
+    }
+    return sha256_hex(canonical_bytes(payload))
+
+
+def _snapshot_sha256(snapshot: SnapshotV1) -> str:
+    """Exact-content fingerprint of the SnapshotV1 (fee rates, minimums,
+    tick / step rules, verification statuses, source endpoints, ...)."""
+    return sha256_hex(canonical_bytes(snapshot.model_dump(mode="json")))
+
+
+def _safe_read_jsonl(path: Path, name: str) -> list[dict[str, Any]]:
+    """Wrap :func:`~bithumb_bot.paper.state.read_jsonl` so that a
+    malformed line (which the helper raises as a bare ``ValueError``)
+    is converted into a
+    :class:`~bithumb_bot.errors.ProcessedPrefixMutatedError` — the
+    dedicated exception the CLI catches for clean exit-1 refusal."""
+    try:
+        return read_jsonl(path)
+    except ValueError as exc:
+        raise ProcessedPrefixMutatedError(
+            f"{name}: malformed JSONL — {exc}"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
 # state.json + sidecar I/O (uses artifact.canonical for sha256 sidecar)
 # ---------------------------------------------------------------------------
 
@@ -341,9 +445,10 @@ def _load_state(state_dir: Path) -> BreakoutState | None:
     on_disk_schema = parsed.get("schema_version") if isinstance(parsed, dict) else None
     if on_disk_schema != _SCHEMA_VERSION:
         raise BreakoutResumeDivergenceError(
-            f"state.json schema_version={on_disk_schema!r} does not match "
-            f"current runner's schema_version={_SCHEMA_VERSION} — delete "
-            "state.json to start a fresh session"
+            f"state.json schema_version={on_disk_schema!r} predates the "
+            f"current runner's schema_version={_SCHEMA_VERSION} — an older "
+            "state.json is not resume-compatible (missing input "
+            "fingerprints); delete the state directory to start fresh"
         )
     return BreakoutState(**parsed)
 
@@ -398,6 +503,7 @@ def _refused(
 def _check_resume_divergence(
     prior: BreakoutState,
     dataset: CandleDataset,
+    snapshot: SnapshotV1,
     config: BreakoutPaperConfig,
     paper_start_ts_utc: datetime,
 ) -> None:
@@ -416,6 +522,17 @@ def _check_resume_divergence(
         mismatches.append("entry_lookback_candles")
     if prior.exit_lookback_candles != EXIT_LOOKBACK_CANDLES:
         mismatches.append("exit_lookback_candles")
+    # Exact-content fingerprints (schema_version >= 3). Any drift on
+    # the warmup slice, the config, or the snapshot is a resume-time
+    # refusal — the audit trail's fills depend on these inputs, so
+    # continuing across a change would silently mix incompatible
+    # regimes into one ledger.
+    if prior.warmup_sha256 != _warmup_slice_sha256(dataset):
+        mismatches.append("warmup_sha256")
+    if prior.config_sha256 != _config_sha256(config):
+        mismatches.append("config_sha256")
+    if prior.snapshot_sha256 != _snapshot_sha256(snapshot):
+        mismatches.append("snapshot_sha256")
     if mismatches:
         raise BreakoutResumeDivergenceError(
             f"resumed breakout paper session diverges on: {mismatches!r} "
@@ -619,13 +736,19 @@ def run_breakout_paper_session(
     prior = _load_state(state_dir)
     resumed = prior is not None
     if prior is not None:
-        _check_resume_divergence(prior, dataset, config, paper_start_ts_utc)
+        _check_resume_divergence(
+            prior, dataset, snapshot, config, paper_start_ts_utc
+        )
 
-    # ---- STAGE 3: load persisted prefix logs ----
-    persisted_fingerprints = read_jsonl(fingerprints_path)
-    persisted_fills = read_jsonl(fills_path)
-    persisted_signals = read_jsonl(signals_path)
-    persisted_equity = read_jsonl(equity_path)
+    # ---- STAGE 3: load persisted prefix logs (malformed JSONL is
+    # converted into ProcessedPrefixMutatedError so the CLI can catch
+    # it cleanly). No file mutation here.
+    persisted_fingerprints = _safe_read_jsonl(
+        fingerprints_path, "candle_fingerprints.jsonl"
+    )
+    persisted_fills = _safe_read_jsonl(fills_path, "fills.jsonl")
+    persisted_signals = _safe_read_jsonl(signals_path, "signals.jsonl")
+    persisted_equity = _safe_read_jsonl(equity_path, "equity.jsonl")
 
     # ---- STAGE 4: verify fingerprint prefix against the current dataset
     # (before ANY file mutation and before the potentially expensive replay).
@@ -823,6 +946,9 @@ def run_breakout_paper_session(
         unit_minutes=dataset.unit_minutes,
         paper_start_ts_utc=paper_start_ts_utc.isoformat(),
         starting_cash_krw=_dstr(config.starting_cash_krw.value),
+        warmup_sha256=_warmup_slice_sha256(dataset),
+        config_sha256=_config_sha256(config),
+        snapshot_sha256=_snapshot_sha256(snapshot),
         final_cash_krw=_dstr(state.cash_krw.value),
         final_position_qty=_dstr(state.position_qty.value),
         stopped_out_lockout=stopped_out_lockout,

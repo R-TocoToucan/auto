@@ -248,3 +248,76 @@ class TestBreakoutRunHelp:
             "--max-notional-krw",
         ):
             assert flag in out
+
+
+# ---------------------------------------------------------------------------
+# b3ce934-followup safety patch — CLI clean-exit behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestBreakoutRunPrefixIntegrityCleanExit:
+    """The runner's audit-trail integrity errors — malformed persisted
+    JSONL, corrupt state.json sidecar — must surface as a clean CLI
+    exit 1 with a stderr refusal line, never as a Python traceback."""
+
+    def test_malformed_fills_jsonl_exits_1_no_traceback(
+        self,
+        _env: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        dataset = _write_dataset(tmp_path)
+        snapshot = _write_snapshot(tmp_path)
+        state_dir = tmp_path / "state"
+
+        # First successful run.
+        rc1 = _run(
+            dataset=dataset, snapshot=snapshot, state_dir=state_dir,
+            out=tmp_path / "r1.json",
+        )
+        assert rc1 == 0, capsys.readouterr()
+
+        # Hand-corrupt fills.jsonl (a non-JSON line).
+        fills = state_dir / "fills.jsonl"
+        assert fills.is_file()
+        fills.write_bytes(b"{ this is not JSON at all\n")
+
+        rc2 = _run(
+            dataset=dataset, snapshot=snapshot, state_dir=state_dir,
+            out=tmp_path / "r2.json",
+        )
+        assert rc2 == 1
+        err = capsys.readouterr().err
+        assert "ProcessedPrefixMutatedError" in err
+        assert "Traceback" not in err
+
+    def test_corrupt_state_sidecar_exits_1_no_traceback(
+        self,
+        _env: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        dataset = _write_dataset(tmp_path)
+        snapshot = _write_snapshot(tmp_path)
+        state_dir = tmp_path / "state"
+
+        rc1 = _run(
+            dataset=dataset, snapshot=snapshot, state_dir=state_dir,
+            out=tmp_path / "r1.json",
+        )
+        assert rc1 == 0, capsys.readouterr()
+
+        # Break the state.json sidecar hash so the load_state check
+        # raises SidecarHashMismatchError.
+        sidecar = state_dir / "state.json.sha256"
+        assert sidecar.is_file()
+        sidecar.write_text("0" * 64 + "\n", encoding="utf-8")
+
+        rc2 = _run(
+            dataset=dataset, snapshot=snapshot, state_dir=state_dir,
+            out=tmp_path / "r2.json",
+        )
+        assert rc2 == 1
+        err = capsys.readouterr().err
+        assert "SidecarHashMismatchError" in err
+        assert "Traceback" not in err

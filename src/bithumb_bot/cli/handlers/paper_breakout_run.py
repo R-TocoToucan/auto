@@ -49,6 +49,7 @@ from bithumb_bot.bithumb_spec.snapshot import load_snapshot
 from bithumb_bot.config.gate_loader import load_gate1
 from bithumb_bot.config.validator import REPO_ROOT_ENV, validate
 from bithumb_bot.core.money import Money
+from bithumb_bot.errors import ProcessedPrefixMutatedError, SidecarHashMismatchError
 from bithumb_bot.execution.config import ExecutionConfig
 from bithumb_bot.execution.readiness import check_execution_readiness
 from bithumb_bot.market_data.dataset import load_dataset
@@ -372,7 +373,14 @@ def handler(args: argparse.Namespace) -> int:
         BreakoutInputContractMismatchError,
         BreakoutResumeDivergenceError,
         BreakoutRunnerError,
+        ProcessedPrefixMutatedError,
+        SidecarHashMismatchError,
     ) as exc:
+        # Clean refusal for both the shadow runner's own errors AND the
+        # audit-trail integrity errors from the shared paper.state
+        # helpers (malformed prefix JSONL → ProcessedPrefixMutatedError,
+        # corrupt state.json sidecar → SidecarHashMismatchError). No
+        # traceback surfaces to the operator.
         print(
             f"bt paper breakout-run: refusal ({type(exc).__name__}): {exc}",
             file=sys.stderr,
