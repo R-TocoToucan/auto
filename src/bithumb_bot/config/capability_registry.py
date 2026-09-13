@@ -237,6 +237,20 @@ _PHASE1: dict[tuple[str, str], CapabilityRequirements] = {
         trade_cred_prohibited=True,
         human_auth=HumanAuthRequirement.NONE,
     ),
+    # paper breakout-run — shadow BTC breakout candidate; same
+    # zero-credential offline shape as `paper run`. Distinct capability
+    # row so future changes (Gate-2 promotion of the shadow, its own
+    # snapshot requirement, etc.) don't perturb the SMA runner's row.
+    ("paper", "breakout-run"): CapabilityRequirements(
+        gate1=True,
+        gate2=False,
+        gate3=False,
+        snapshot=SnapshotRequirement.EVIDENCE_INPUT,
+        cap=CapRequirement.NOT_REQUIRED,
+        cred=CredRequirement.NONE,
+        trade_cred_prohibited=True,
+        human_auth=HumanAuthRequirement.NONE,
+    ),
 }
 
 

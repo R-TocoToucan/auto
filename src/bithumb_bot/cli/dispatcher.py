@@ -128,6 +128,9 @@ HANDLER_MAP: dict[tuple[str, str], HandlerFn] = {
     ("paper", "run"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.paper_run", "handler"
     ),
+    ("paper", "breakout-run"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.paper_breakout_run", "handler"
+    ),
     # ---- D-87 reserved verbs — every entry bound to reserved_handler ------
     ("m2", "collect-observations"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.reserved", "reserved_handler"
@@ -355,6 +358,32 @@ def _build_parser() -> argparse.ArgumentParser:
     p_paper_run.add_argument("--config", required=True)
     p_paper_run.add_argument("--state-dir", required=True)
     p_paper_run.add_argument("--out", required=True)
+
+    p_paper_breakout = p_paper_sub.add_parser(
+        "breakout-run",
+        help=(
+            "Shadow BTC breakout candidate paper runner — separate "
+            "state / ledger / fills / signals / equity from `paper run`. "
+            "No credentials, no live orders."
+        ),
+    )
+    p_paper_breakout.add_argument("--dataset", required=True)
+    p_paper_breakout.add_argument("--snapshot", required=True)
+    p_paper_breakout.add_argument("--state-dir", required=True)
+    p_paper_breakout.add_argument("--out", required=True)
+    p_paper_breakout.add_argument(
+        "--starting-cash-krw",
+        required=True,
+        help="Starting cash for the isolated research sleeve (Decimal string).",
+    )
+    p_paper_breakout.add_argument(
+        "--max-notional-krw",
+        required=True,
+        help=(
+            "Applicability cap for the execution slippage model "
+            "(Decimal string)."
+        ),
+    )
 
     # -- D-87 reserved verbs (added by plan 01-03-08) ---------------------
     # Every reserved subparser is labelled `RESERVED — future phase, not
