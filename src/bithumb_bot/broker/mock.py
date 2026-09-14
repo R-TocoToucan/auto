@@ -28,7 +28,6 @@ Design rules (spec):
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -39,6 +38,23 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+# Deterministic-identity helpers were moved to the venue-neutral
+# bithumb_bot.broker.identity module so protective.py can share the
+# same canonical form without importing this broker implementation.
+# The underscore-prefixed aliases are kept as re-exports so any test
+# or caller that reaches for them by the old name still works.
+from bithumb_bot.broker.identity import (
+    canonical_datetime as _canonical_datetime,  # noqa: F401 — public re-export
+)
+from bithumb_bot.broker.identity import (
+    canonical_decimal as _canonical_decimal,  # noqa: F401 — public re-export
+)
+from bithumb_bot.broker.identity import (
+    canonical_intent_bytes as _canonical_intent_bytes,
+)
+from bithumb_bot.broker.identity import (
+    deterministic_client_order_id,
+)
 from bithumb_bot.broker.state import (
     TERMINAL_STATES,
     VALID_TRANSITIONS,
@@ -82,88 +98,6 @@ class BrokerClockError(BrokerError):
 
 def _default_now() -> datetime:
     return datetime.now(UTC)
-
-
-def _canonical_datetime(dt: datetime) -> str:
-    """UTC-normalized ISO-8601 string. Naive datetimes are refused."""
-    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-        raise ValueError(f"naive datetime not permitted: {dt.isoformat()}")
-    return dt.astimezone(UTC).isoformat()
-
-
-def _canonical_decimal(value: Decimal) -> str:
-    """Canonical string form derived directly from ``Decimal.as_tuple()``.
-
-    Equal numeric values produce equal strings — ``Decimal('100000')`` and
-    ``Decimal('100000.00')`` both fold to ``+1E5``. Distinct values of
-    arbitrary precision are NEVER rounded together: this function reads
-    the raw coefficient/exponent triple, so no context-dependent rounding
-    (as ``.normalize()`` would apply) can collapse two high-precision
-    values that differ beyond the active context's precision.
-
-    Non-finite Decimals are refused.
-    """
-    if not value.is_finite():
-        raise ValueError(f"non-finite Decimal not permitted: {value}")
-    tup = value.as_tuple()
-    digits: tuple[int, ...] = tup.digits
-    exponent = tup.exponent
-    if not isinstance(exponent, int):
-        # is_finite() already excludes n/N/F exponents; this is a hard
-        # invariant guard, not user-reachable.
-        raise ValueError(f"non-finite Decimal exponent: {exponent!r}")
-    if all(d == 0 for d in digits):
-        # Fold every representation of zero (including -0, 0.00, 0E+3)
-        # to a single canonical form.
-        return "+0E0"
-    end = len(digits)
-    while end > 1 and digits[end - 1] == 0:
-        end -= 1
-        exponent += 1
-    coeff = "".join(str(d) for d in digits[:end])
-    sign_char = "-" if tup.sign == 1 else "+"
-    return f"{sign_char}{coeff}E{exponent}"
-
-
-def _canonical_intent_bytes(intent: OrderIntent) -> bytes:
-    """Deterministic byte-for-byte serialization used ONLY for hashing.
-
-    Two intents with equal fields — even if their datetimes carry
-    different UTC offsets or their Decimals carry different trailing-zero
-    representations — always produce equal bytes here.
-    """
-    payload = {
-        "side": intent.side,
-        "source_open_time_utc": _canonical_datetime(intent.source_open_time_utc),
-        "unit_minutes": intent.unit_minutes,
-        "signal_ts_utc": _canonical_datetime(intent.signal_ts_utc),
-        "requested_notional_krw": (
-            _canonical_decimal(intent.requested_notional_krw.value)
-            if intent.requested_notional_krw is not None
-            else None
-        ),
-        "requested_qty": (
-            _canonical_decimal(intent.requested_qty.value)
-            if intent.requested_qty is not None
-            else None
-        ),
-        "reason": intent.reason,
-        "trigger_price": (
-            _canonical_decimal(intent.trigger_price.value)
-            if intent.trigger_price is not None
-            else None
-        ),
-    }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-
-
-def deterministic_client_order_id(intent: OrderIntent) -> str:
-    """SHA-256 hex (64 chars) of the canonical intent bytes.
-
-    Raises ``ValueError`` if the intent carries a naive datetime or a
-    non-finite Decimal — those inputs cannot be canonicalized safely.
-    """
-    return hashlib.sha256(_canonical_intent_bytes(intent)).hexdigest()
 
 
 def _parse_iso_utc(s: str) -> datetime:

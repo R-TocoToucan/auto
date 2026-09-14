@@ -9,6 +9,7 @@ Bithumb adapter lands in Phase 5 M6A and remains out of milestone
 scope for now.
 """
 
+from bithumb_bot.broker.identity import deterministic_client_order_id
 from bithumb_bot.broker.interface import Broker
 from bithumb_bot.broker.mock import (
     BrokerError,
@@ -16,7 +17,6 @@ from bithumb_bot.broker.mock import (
     FillExceedsIntent,
     InvalidStateTransition,
     MockBroker,
-    deterministic_client_order_id,
 )
 from bithumb_bot.broker.state import (
     TERMINAL_STATES,
