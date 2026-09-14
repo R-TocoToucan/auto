@@ -46,7 +46,7 @@ Live surface (strictly ``confirmed_read_only`` everywhere):
 
 1. ``general_fee_rate``
 2. ``market_buy_fee_reservation``
-3. ``default_tick``                          (live schedule not accepted from docs alone here)
+3. ``price_tick_source``                     (schedule provenance OR default_tick)
 4. ``default_step``                          (venue-confirmed live step)
 5. ``fee_rates.bid``
 6. ``fee_rates.ask``
@@ -82,7 +82,7 @@ _RESEARCH_CHECK_ORDER: tuple[str, ...] = (
 _LIVE_CHECK_ORDER: tuple[str, ...] = (
     "general_fee_rate",
     "market_buy_fee_reservation",
-    "default_tick",
+    "price_tick_source",
     "default_step",
     "fee_rates.bid",
     "fee_rates.ask",
@@ -214,7 +214,7 @@ def check_execution_readiness(
 
     live_checks["general_fee_rate"] = _fee_ready_live(fee_general)
     live_checks["market_buy_fee_reservation"] = _fee_ready_live(fee_buy)
-    live_checks["default_tick"] = "default_tick" in snapshot.price_tick_rules
+    live_checks["price_tick_source"] = _price_tick_source_ready_research(snapshot)
     live_checks["default_step"] = "default_step" in snapshot.quantity_step_rules
     live_checks["fee_rates.bid"] = snapshot.fee_rates.bid is not None
     live_checks["fee_rates.ask"] = snapshot.fee_rates.ask is not None

@@ -189,7 +189,10 @@ _PHASE1: dict[tuple[str, str], CapabilityRequirements] = {
         trade_cred_prohibited=True,
         human_auth=HumanAuthRequirement.NONE,
     ),
-    # m1 verify-snapshot — offline; snapshot is CANDIDATE being verified
+    # m1 verify-snapshot — offline; snapshot is CANDIDATE being verified.
+    # Does NOT load any trade credential, but must remain callable inside
+    # the live operator environment where a trade credential is present,
+    # so ``trade_cred_prohibited`` is False (permissive, not required).
     ("m1", "verify-snapshot"): CapabilityRequirements(
         gate1=True,
         gate2=False,
@@ -197,11 +200,13 @@ _PHASE1: dict[tuple[str, str], CapabilityRequirements] = {
         snapshot=SnapshotRequirement.CANDIDATE,
         cap=CapRequirement.NOT_REQUIRED,
         cred=CredRequirement.NONE,
-        trade_cred_prohibited=True,
+        trade_cred_prohibited=False,
         human_auth=HumanAuthRequirement.NONE,
     ),
     # research collect-candles — public REST candle collection, no
-    # credentials, invocation-scoped human authorization.
+    # credentials, invocation-scoped human authorization. Never loads a
+    # trade credential but must remain callable while the live operator
+    # environment holds one, so ``trade_cred_prohibited`` is False.
     ("research", "collect-candles"): CapabilityRequirements(
         gate1=True,
         gate2=False,
@@ -209,7 +214,7 @@ _PHASE1: dict[tuple[str, str], CapabilityRequirements] = {
         snapshot=SnapshotRequirement.NONE,
         cap=CapRequirement.NOT_REQUIRED,
         cred=CredRequirement.NONE,
-        trade_cred_prohibited=True,
+        trade_cred_prohibited=False,
         human_auth=HumanAuthRequirement.INVOCATION_ONLY,
     ),
     # research backtest — offline; snapshot is EVIDENCE input for the
