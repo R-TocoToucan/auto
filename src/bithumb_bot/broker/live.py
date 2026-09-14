@@ -977,7 +977,20 @@ class LiveBithumbBroker:
             raise VenueResponseError(
                 f"venue row side={row_side!r} != expected {expected_side!r}"
             )
-        row_ord = venue_row.get("order_type")
+        # Accept either ``order_type`` (v2 POST response) or ``ord_type``
+        # (GET /v1/order response) — the venue uses different key names
+        # across those two endpoints. If both are present and disagree,
+        # refuse the row.
+        has_order_type = "order_type" in venue_row
+        has_ord_type = "ord_type" in venue_row
+        row_order_type = venue_row.get("order_type")
+        row_ord_type = venue_row.get("ord_type")
+        if has_order_type and has_ord_type and row_order_type != row_ord_type:
+            raise VenueResponseError(
+                f"venue row order_type={row_order_type!r} disagrees with "
+                f"ord_type={row_ord_type!r}"
+            )
+        row_ord = row_order_type if has_order_type else row_ord_type
         expected_ord = "price" if order.intent.side == "buy" else "market"
         if row_ord != expected_ord:
             raise VenueResponseError(
@@ -1235,12 +1248,21 @@ class LiveBithumbBroker:
             return updated.to_broker_order()
 
         # kind == "ok"
-        if not isinstance(response_body, dict):
-            # Malformed 2xx: ambiguous/recoverable, NOT terminal.
+        # A 2xx that is not a dict, or is a dict without a recognized
+        # ``state`` string, is incomplete — not terminal. Reconcile via
+        # GET by the persisted wire client_order_id; never repeat POST.
+        response_state = (
+            response_body.get("state")
+            if isinstance(response_body, dict)
+            else None
+        )
+        if not isinstance(response_body, dict) or not (
+            isinstance(response_state, str) and response_state in _STATE_MAP
+        ):
             venue_row = self._reconcile_venue_by_client_order_id(wire_cid)
             if venue_row is None:
                 raise AmbiguousSubmitError(
-                    "POST /v2/orders 2xx body malformed and venue reports "
+                    "POST /v2/orders 2xx body incomplete and venue reports "
                     "no order yet; halt for operator intervention"
                 )
             updated = self._apply_venue_response(pre, venue_row)
