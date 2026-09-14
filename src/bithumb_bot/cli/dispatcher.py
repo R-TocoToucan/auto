@@ -134,6 +134,9 @@ HANDLER_MAP: dict[tuple[str, str], HandlerFn] = {
     ("live", "breakout-cycle"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.live_breakout_cycle", "handler"
     ),
+    ("live", "order-canary"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.live_order_canary", "handler"
+    ),
     # ---- D-87 reserved verbs — every entry bound to reserved_handler ------
     ("m2", "collect-observations"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.reserved", "reserved_handler"
@@ -441,6 +444,33 @@ def _build_parser() -> argparse.ArgumentParser:
             "already reports nonzero BTC but no managed order history "
             "exists locally. Never silently adopt without this flag."
         ),
+    )
+    p_live_canary = p_live_sub.add_parser(
+        "order-canary",
+        help=(
+            "One-shot 10,000 KRW live-order canary. Requires all of "
+            "--mode live --enable-live-orders --confirm-canary. "
+            "Restart-safe; submits at most one new order per invocation."
+        ),
+    )
+    p_live_canary.add_argument("--state-dir", required=True)
+    p_live_canary.add_argument(
+        "--mode",
+        choices=["live"],
+        required=True,
+        help="Must be 'live' — the canary has no dry-run mode.",
+    )
+    p_live_canary.add_argument(
+        "--enable-live-orders",
+        action="store_true",
+        default=False,
+        help="Required together with --mode live.",
+    )
+    p_live_canary.add_argument(
+        "--confirm-canary",
+        action="store_true",
+        default=False,
+        help="Required — explicit operator acknowledgement of the canary.",
     )
 
     # -- D-87 reserved verbs (added by plan 01-03-08) ---------------------

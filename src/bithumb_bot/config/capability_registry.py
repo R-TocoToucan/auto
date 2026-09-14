@@ -271,6 +271,20 @@ _PHASE1: dict[tuple[str, str], CapabilityRequirements] = {
         trade_cred_prohibited=False,
         human_auth=HumanAuthRequirement.INVOCATION_ONLY,
     ),
+    # live order-canary — hard-capped 10,000 KRW canary that verifies the
+    # real market-buy + market-sell path. Loads trade credentials only
+    # when --mode live --enable-live-orders --confirm-canary are all
+    # supplied inside the handler; validate() never loads them.
+    ("live", "order-canary"): CapabilityRequirements(
+        gate1=True,
+        gate2=False,
+        gate3=False,
+        snapshot=SnapshotRequirement.NONE,
+        cap=CapRequirement.NOT_REQUIRED,
+        cred=CredRequirement.NONE,
+        trade_cred_prohibited=False,
+        human_auth=HumanAuthRequirement.INVOCATION_ONLY,
+    ),
 }
 
 

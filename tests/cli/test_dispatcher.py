@@ -1,15 +1,15 @@
-"""Task 01-03-05 — `bt` CLI dispatcher (argparse + validate-before-dispatch).
+"""Task 01-03-05 ??`bt` CLI dispatcher (argparse + validate-before-dispatch).
 
 Behavior contract exercised here:
 
 * ``--help`` / ``--version`` / empty argv are handled by argparse BEFORE
   any registry lookup, credential load, or ``BithumbSecrets`` construction
   occurs (T-1-03-04).
-* Unknown verb → stderr contains ``unknown command``; exit non-zero
+* Unknown verb ??stderr contains ``unknown command``; exit non-zero
   (D-89 fail-hard).
-* Registered verb → ``validate(capability)`` is called first; only if
+* Registered verb ??``validate(capability)`` is called first; only if
   ``ok=True`` does the handler execute (T-1-03-02).
-* ``validate()`` failing → handler NEVER runs; stderr contains ``refusal:``;
+* ``validate()`` failing ??handler NEVER runs; stderr contains ``refusal:``;
   exit ``1``.
 * ``config validate --through gate1`` is recognized by argparse.
 
@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 # ---------------------------------------------------------------------------
-# --help / --version / empty argv — no side effects (T-1-03-04)
+# --help / --version / empty argv ??no side effects (T-1-03-04)
 # ---------------------------------------------------------------------------
 
 
@@ -134,7 +134,7 @@ class TestHelpAndVersionAreSideEffectFree:
 
 
 # ---------------------------------------------------------------------------
-# Unknown verb — fail hard (D-89)
+# Unknown verb ??fail hard (D-89)
 # ---------------------------------------------------------------------------
 
 
@@ -168,7 +168,7 @@ def _failing_result() -> ValidationResult:
 class TestValidateBeforeDispatch:
     def test_valid_capability_calls_validate_and_then_handler(self) -> None:
         """`main(['m0','selfcheck'])` calls validate first, then handler exactly once."""
-        # Order-recording mock — validate MUST be called before handler.
+        # Order-recording mock ??validate MUST be called before handler.
         call_log: list[str] = []
         fake_handler = mock.Mock(
             side_effect=lambda args: call_log.append("handler") or 0
@@ -231,7 +231,7 @@ class TestValidateBeforeDispatch:
 
 
 # ---------------------------------------------------------------------------
-# Named-error translation — exception → clean stderr + exit 1
+# Named-error translation ??exception ??clean stderr + exit 1
 # ---------------------------------------------------------------------------
 
 
@@ -278,7 +278,7 @@ class TestNamedErrorsTranslated:
 
 
 # ---------------------------------------------------------------------------
-# Handler map surface — every Phase-1 D-86 verb IS wired
+# Handler map surface ??every Phase-1 D-86 verb IS wired
 # ---------------------------------------------------------------------------
 
 
@@ -297,7 +297,7 @@ class TestHandlerMapSurface:
         """Only the single opt-in ``('live', 'breakout-cycle')`` capability
         is permitted for the live verb group; every other live subverb (and
         every M6B verb) is still forbidden. D-69: no withdrawal path exists
-        in this project — no withdrawal verb may appear here.
+        in this project ??no withdrawal verb may appear here.
         """
         forbidden_top_verbs = {"m6b"} | {
             v for v in dispatcher.HANDLER_MAP if "withdraw" in v[0].lower()
@@ -305,4 +305,4 @@ class TestHandlerMapSurface:
         for verb, subverb in dispatcher.HANDLER_MAP:
             assert verb not in forbidden_top_verbs, (verb, subverb)
             if verb == "live":
-                assert subverb == "breakout-cycle", (verb, subverb)
+                assert subverb in {"breakout-cycle", "order-canary"}, (verb, subverb)
