@@ -32,7 +32,7 @@
     `bt live breakout-cycle`.
 
 .PARAMETER InitialStartUtc
-    ISO-8601 UTC timestamp on a 240-minute boundary — the anchor from
+    ISO-8601 UTC timestamp on a 240-minute boundary ??the anchor from
     which every candle fetch starts. Must not change across polls.
 
 .PARAMETER MaxNotionalKrw
@@ -48,7 +48,7 @@
     Enable live-order mode. Must be combined with -EnableLiveOrders.
 
 .PARAMETER EnableLiveOrders
-    Second activation switch — must be paired with -Live.
+    Second activation switch ??must be paired with -Live.
 
 .PARAMETER Once
     Run exactly one poll cycle then exit (operator-testing).
@@ -162,8 +162,10 @@ function Invoke-Bt($btArgs, $logFile) {
     $allArgs += $leading
     $allArgs += $btArgs
     "invoking: $exe " + ($allArgs -join " ") | Out-File -FilePath $logFile -Encoding utf8 -Append
-    & $exe @allArgs 2>&1 | Tee-Object -FilePath $logFile -Append
-    return $LASTEXITCODE
+    $output = & $exe @allArgs 2>&1
+    $exitCode = $LASTEXITCODE
+    $output | Tee-Object -FilePath $logFile -Append | Out-Host
+    return $exitCode
 }
 
 function Test-DatasetAppendOnly($priorPath, $newPath) {
@@ -268,7 +270,7 @@ function Invoke-OneCycle {
         return 1
     }
     if (-not (Test-DatasetAppendOnly $prior $newDatasetPath)) {
-        # Move aside the offending dataset for forensic review — do NOT
+        # Move aside the offending dataset for forensic review ??do NOT
         # silently overwrite the append-only history.
         $quarantine = "$newDatasetPath.rejected"
         Move-Item -LiteralPath $newDatasetPath -Destination $quarantine -Force
@@ -281,7 +283,7 @@ function Invoke-OneCycle {
     }
 
     # Exactly one live cycle per invocation. HALT handling lives inside
-    # `bt live breakout-cycle` — it reconciles but does not submit when
+    # `bt live breakout-cycle` ??it reconciles but does not submit when
     # $StateDir/HALT exists.
     $cycleArgs = @(
         "live", "breakout-cycle",
