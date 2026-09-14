@@ -16,8 +16,11 @@ data, but their handlers must not be scaffolded as functional. This
 module exposes `RESERVED_HANDLER_ERROR` — the CLI dispatcher looks it up
 for reserved verbs so refusal is uniform.
 
-D-96: no M6B or live verb is registered.
-D-97: every entry has `trade_cred_prohibited=True`.
+D-96 / D-97 update: the single ``('live', 'breakout-cycle')`` verb is
+registered as the SOLE capability with ``trade_cred_prohibited=False``
+— it is the one code path that may load a trade credential, and only
+when both ``--mode live`` AND ``--enable-live-orders`` are set. Every
+other row continues to set ``trade_cred_prohibited=True``.
 """
 
 from __future__ import annotations
@@ -250,6 +253,23 @@ _PHASE1: dict[tuple[str, str], CapabilityRequirements] = {
         cred=CredRequirement.NONE,
         trade_cred_prohibited=True,
         human_auth=HumanAuthRequirement.NONE,
+    ),
+    # live breakout-cycle — one-cycle BTC breakout dispatcher that MAY
+    # load trade credentials (only in --mode live --enable-live-orders).
+    # This is the SOLE registered capability with
+    # `trade_cred_prohibited=False`; every other capability continues to
+    # refuse trade credentials. Credential loading itself happens inside
+    # the handler under both activation controls — validate() never
+    # loads them (so dry-run stays credential-free).
+    ("live", "breakout-cycle"): CapabilityRequirements(
+        gate1=True,
+        gate2=False,
+        gate3=False,
+        snapshot=SnapshotRequirement.EVIDENCE_INPUT,
+        cap=CapRequirement.NOT_REQUIRED,
+        cred=CredRequirement.NONE,
+        trade_cred_prohibited=False,
+        human_auth=HumanAuthRequirement.INVOCATION_ONLY,
     ),
 }
 

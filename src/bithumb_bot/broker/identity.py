@@ -104,9 +104,38 @@ def deterministic_client_order_id(intent: OrderIntent) -> str:
     return hashlib.sha256(canonical_intent_bytes(intent)).hexdigest()
 
 
+WIRE_CLIENT_ORDER_ID_PREFIX = "bt-"
+WIRE_CLIENT_ORDER_ID_HASH_LEN = 33
+WIRE_CLIENT_ORDER_ID_TOTAL_LEN = (
+    len(WIRE_CLIENT_ORDER_ID_PREFIX) + WIRE_CLIENT_ORDER_ID_HASH_LEN
+)  # 36 — the Bithumb venue cap.
+
+
+def deterministic_wire_client_order_id(intent: OrderIntent) -> str:
+    """Return the venue-safe ``client_order_id`` sent on the wire.
+
+    Bithumb caps ``client_order_id`` at 36 characters. The internal
+    persisted id is the full 64-char SHA-256 (collision guard); the
+    wire id is a deterministic function of the same canonical bytes —
+    the ``bt-`` prefix (venue-side filter) followed by the first 33 hex
+    chars (132 bits of collision resistance).
+
+    Same-intent-in → same-string-out, so a persisted mapping can be
+    rehashed and matched byte-for-byte after restart.
+    """
+    return (
+        f"{WIRE_CLIENT_ORDER_ID_PREFIX}"
+        f"{deterministic_client_order_id(intent)[:WIRE_CLIENT_ORDER_ID_HASH_LEN]}"
+    )
+
+
 __all__ = [
+    "WIRE_CLIENT_ORDER_ID_HASH_LEN",
+    "WIRE_CLIENT_ORDER_ID_PREFIX",
+    "WIRE_CLIENT_ORDER_ID_TOTAL_LEN",
     "canonical_datetime",
     "canonical_decimal",
     "canonical_intent_bytes",
     "deterministic_client_order_id",
+    "deterministic_wire_client_order_id",
 ]

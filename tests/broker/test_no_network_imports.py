@@ -35,9 +35,19 @@ _FORBIDDEN_ATTRIBUTES = (
 )
 
 
+# ``live.py`` is a live-venue adapter that DOES import httpx + PyJWT by
+# design — it is the sole opt-in code path enabled behind the two-flag
+# --mode live --enable-live-orders combination. The guardrail scopes to
+# every other module under ``bithumb_bot.broker`` so the MockBroker /
+# identity / state / interface guarantee remains honest.
+_ALLOWED_NETWORK_MODULE_STEMS: frozenset[str] = frozenset({"live"})
+
+
 def test_broker_source_has_no_network_or_credential_imports() -> None:
     pkg_root = Path(broker_pkg.__file__).parent
     for path in sorted(pkg_root.rglob("*.py")):
+        if path.stem in _ALLOWED_NETWORK_MODULE_STEMS:
+            continue
         source = path.read_text(encoding="utf-8")
         for mod in _FORBIDDEN_IMPORT_MODULES:
             assert f"import {mod}" not in source, (

@@ -293,8 +293,16 @@ class TestHandlerMapSurface:
         }
         assert expected.issubset(dispatcher.HANDLER_MAP.keys())
 
-    def test_no_m6b_or_live_verbs_in_handler_map(self) -> None:
+    def test_no_m6b_or_forbidden_verbs_in_handler_map(self) -> None:
+        """Only the single opt-in ``('live', 'breakout-cycle')`` capability
+        is permitted for the live verb group; every other live subverb (and
+        every M6B verb) is still forbidden. D-69: no withdrawal path exists
+        in this project — no withdrawal verb may appear here.
+        """
+        forbidden_top_verbs = {"m6b"} | {
+            v for v in dispatcher.HANDLER_MAP if "withdraw" in v[0].lower()
+        }
         for verb, subverb in dispatcher.HANDLER_MAP:
-            # D-69: no withdrawal path exists in this project — asserting
-            # 'withdraw' cannot appear as a verb name is belt-and-suspenders.
-            assert verb not in ("m6b", "live", "withdraw"), (verb, subverb)
+            assert verb not in forbidden_top_verbs, (verb, subverb)
+            if verb == "live":
+                assert subverb == "breakout-cycle", (verb, subverb)

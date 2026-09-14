@@ -25,8 +25,9 @@ behaviour on invalid transitions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 
 from bithumb_bot.core.money import Money, Qty
@@ -93,6 +94,12 @@ class BrokerOrder:
     filled_notional_krw: Money
     rejection_reason: str | None
     history: tuple[StateTransition, ...]
+    #: Cumulative KRW fee paid to the venue for this order. Defaults to
+    #: zero for the ``MockBroker`` path (dry-run has no venue and no
+    #: fee); the live broker folds every reported ``paid_fee`` from
+    #: ``/v1/order`` into this field so KRW-drift reconciliation stays
+    #: honest under the actual 0.25% Bithumb fee.
+    paid_fee_krw: Money = field(default_factory=lambda: Money(Decimal("0")))
 
 
 __all__ = [

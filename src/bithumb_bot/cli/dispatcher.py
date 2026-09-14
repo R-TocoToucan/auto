@@ -131,6 +131,9 @@ HANDLER_MAP: dict[tuple[str, str], HandlerFn] = {
     ("paper", "breakout-run"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.paper_breakout_run", "handler"
     ),
+    ("live", "breakout-cycle"): _make_lazy_handler(
+        "bithumb_bot.cli.handlers.live_breakout_cycle", "handler"
+    ),
     # ---- D-87 reserved verbs — every entry bound to reserved_handler ------
     ("m2", "collect-observations"): _make_lazy_handler(
         "bithumb_bot.cli.handlers.reserved", "reserved_handler"
@@ -382,6 +385,61 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Applicability cap for the execution slippage model "
             "(Decimal string)."
+        ),
+    )
+
+    # -- live verb ---------------------------------------------------------
+    p_live = verbs.add_parser(
+        "live",
+        help=(
+            "Live BTC breakout dispatcher — one cycle per invocation. "
+            "Dry-run default; --mode live --enable-live-orders unlocks "
+            "trade credentials for the SOLE live capability."
+        ),
+    )
+    p_live_sub = p_live.add_subparsers(
+        dest="subverb", metavar="<subverb>", title="live verbs"
+    )
+    p_live_cycle = p_live_sub.add_parser(
+        "breakout-cycle",
+        help=(
+            "Run exactly ONE breakout-cycle iteration: reconcile, "
+            "evaluate, at-most-one submit, persist, report. Restart-safe."
+        ),
+    )
+    p_live_cycle.add_argument("--dataset", required=True)
+    p_live_cycle.add_argument("--snapshot", required=True)
+    p_live_cycle.add_argument("--state-dir", required=True)
+    p_live_cycle.add_argument("--max-notional-krw", required=True)
+    p_live_cycle.add_argument(
+        "--mode",
+        choices=["dry-run", "live"],
+        default="dry-run",
+        help="Default dry-run uses MockBroker and loads no credentials.",
+    )
+    p_live_cycle.add_argument(
+        "--enable-live-orders",
+        action="store_true",
+        default=False,
+        help="Required together with --mode live to unlock trade credentials.",
+    )
+    p_live_cycle.add_argument(
+        "--starting-cash-krw",
+        required=False,
+        default=None,
+        help=(
+            "REQUIRED for --mode dry-run; FORBIDDEN in --mode live "
+            "(live cash is read from the venue)."
+        ),
+    )
+    p_live_cycle.add_argument(
+        "--adopt-existing-btc",
+        action="store_true",
+        default=False,
+        help=(
+            "One-time flag: allow first live startup when the venue "
+            "already reports nonzero BTC but no managed order history "
+            "exists locally. Never silently adopt without this flag."
         ),
     )
 
